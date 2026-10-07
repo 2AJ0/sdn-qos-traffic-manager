@@ -22,11 +22,11 @@ Usage
   ryu-manager qos_controller.py --ofp-tcp-listen-port 6653
 """
 
+from __future__ import annotations
 import re
 import subprocess
 import logging
-
-from ryu.base import app_manager
+from typing import Optional, Tuple, Dict, Setfrom ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, set_ev_cls
 from ryu.ofproto import ofproto_v1_3
