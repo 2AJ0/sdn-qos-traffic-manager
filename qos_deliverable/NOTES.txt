@@ -1,0 +1,22 @@
+CONTENTS
+analysis/         scripts + graphs (analyze.py, loss_check.py, dynamic_plot.py, 3 PNGs)
+data/qos_before   run with OVS queues missing (acts like plain FIFO)
+data/qos_after    run with QoS working (controller started with sudo)
+data/qos_after2   second QoS run, with client output (used for the loss check)
+data/qos_dynamic  45 s run, h1/h4 queue rates swapped at t=20 via ovs-vsctl
+
+FIXES NEEDED IN THE REPO
+1) Run the controller as root (sudo ./venv/bin/ryu-manager ...). Without root the
+   OVS queues are never created and QoS does nothing.
+2) Latest commit e489881 has a typo on line 29 ("Setfrom ryu.base import app_manager")
+   and does not compile. It must be split into two lines.
+3) The controller has no runtime policy change (rates are fixed at startup), but the
+   project sheet requires one. I swapped the h1/h4 queue rates by hand with ovs-vsctl
+   and traffic followed within ~2 s, so the controller only needs to automate that.
+
+TESTED VERSION
+VERSION.txt (original commit) + local_patch.diff (my one-line fix).
+Setup: Ubuntu ARM VM, Python 3.9 venv, ryu 4.34, eventlet 0.30.2, controller run with sudo.
+
+NOTE
+iperf shows payload only, so 5.83/2.92/0.97 Mbps = the 6/3/1 Mbps queues working.

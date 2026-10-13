@@ -1,0 +1,10 @@
+h3 pkill iperf
+h3 iperf -s -u -p 5001 -i 1 -y C > /tmp/qos/srv_h1.csv &
+h3 iperf -s -u -p 5002 -i 1 -y C > /tmp/qos/srv_h2.csv &
+h3 iperf -s -u -p 5003 -i 1 -y C > /tmp/qos/srv_h4.csv &
+h1 ping -c 30 -i 1 10.0.0.3 > /tmp/qos/ping_h1.txt &
+h2 ping -c 30 -i 1 10.0.0.3 > /tmp/qos/ping_h2.txt &
+h4 ping -c 30 -i 1 10.0.0.3 > /tmp/qos/ping_h4.txt &
+h1 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5001 &
+h2 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5002 &
+h4 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5003
