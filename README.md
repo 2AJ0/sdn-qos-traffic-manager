@@ -35,10 +35,9 @@ h4 (10.0.0.4) ─┘
 
 ---
 
-## Features
-
 - **OpenFlow 1.3** — `OFPFlowMod`, `OFPActionSetQueue`, `OFPActionOutput`
 - **Automatic OVS HTB queue provisioning** — runs `ovs-vsctl` on switch connect
+- **Dynamic Policy Swap (Controller-Driven)** — background greenthread (`ryu.lib.hub`) automatically swaps h1 and h4 min-rates mid-run (Phase 1: h1=6M / h4=1M → Phase 2: h1=1M / h4=6M) without disrupting active OpenFlow flows
 - **Dual classification** — source-IP rules + DSCP/DiffServ (EF=46, AF31=26) rules
 - **Bidirectional flows** — proactive reverse flows from h3 → hX (no reactive delay)
 - **Robust port discovery** — OVS peer-bridge query (Strategy A) with max-port fallback (Strategy B)
@@ -91,15 +90,19 @@ sudo python3 qos_topology.py
 mininet> h3 iperf -s -u -p 5001 &
 mininet> h3 iperf -s -u -p 5002 &
 mininet> h3 iperf -s -u -p 5003 &
-mininet> h1 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5001 &
-mininet> h2 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5002 &
-mininet> h4 iperf -c 10.0.0.3 -u -b 10M -t 30 -p 5003
+mininet> h1 iperf -c 10.0.0.3 -u -b 10M -t 40 -p 5001 &
+mininet> h2 iperf -c 10.0.0.3 -u -b 10M -t 40 -p 5002 &
+mininet> h4 iperf -c 10.0.0.3 -u -b 10M -t 40 -p 5003
 ```
 
-Expected results when all three hosts saturate the 10 Mbps link:
-- **h1 ≥ 6 Mbps** (Queue 0, High)
-- **h2 ≥ 3 Mbps** (Queue 1, Medium)
-- **h4 ≥ 1 Mbps** (Queue 2, Best-Effort)
+- **Phase 1 (0 – 20s)**:
+  - **h1 ≥ 6 Mbps** (Queue 0, High)
+  - **h2 ≥ 3 Mbps** (Queue 1, Medium)
+  - **h4 ≥ 1 Mbps** (Queue 2, Best-Effort)
+- **Phase 2 (after 20s swap)**:
+  - **h1 drops to ~1 Mbps** (Queue 0 demoted to Best-Effort)
+  - **h2 remains ~3 Mbps** (Queue 1 Medium, unchanged)
+  - **h4 jumps to ~6 Mbps** (Queue 2 promoted to High Priority)
 
 ### Diagnostic commands
 
