@@ -24,6 +24,42 @@ from mininet.node import OVSSwitch, RemoteController
 from mininet.cli import CLI
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info
+import time
+
+
+class QoSCLI(CLI):
+    """Custom Mininet CLI with built-in commands for the QoS demonstration."""
+
+    def do_traffic(self, line):
+        """Run simultaneous multi-class UDP QoS traffic across h1, h2, h4 to h3."""
+        h1, h2, h3, h4 = self.mn.get('h1', 'h2', 'h3', 'h4')
+        info("\n*** Stopping any existing traffic...\n")
+        for h in [h1, h2, h3, h4]:
+            h.cmd('pkill -9 -f udp_server.py')
+            h.cmd('pkill -9 -f udp_client.py')
+
+        info("*** Starting low-level UDP Server on h3 (listening on 5001, 5002, 5003)...\n")
+        h3.cmd('python3 udp_server.py &')
+        time.sleep(1.5)
+
+        duration = line.strip() if line.strip().isdigit() else "40"
+        info(f"*** Launching simultaneous UDP senders (Duration: {duration}s)...\n")
+        info("    • h1: High Priority   (VoIP)  -> 10 Mbps target -> Queue 0 (6 Mbps)\n")
+        info("    • h2: Medium Priority (Video) -> 10 Mbps target -> Queue 1 (3 Mbps)\n")
+        info("    • h4: Best Effort     (Bulk)  -> 10 Mbps target -> Queue 2 (1 Mbps)\n")
+
+        h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate 10M --time {duration} &')
+        h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate 10M --time {duration} &')
+        h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate 10M --time {duration} &')
+
+        info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
+
+    def do_stop_traffic(self, line):
+        """Stop all running UDP client and server processes."""
+        for h in self.mn.get('h1', 'h2', 'h3', 'h4'):
+            h.cmd('pkill -9 -f udp_server.py')
+            h.cmd('pkill -9 -f udp_client.py')
+        info("*** All UDP traffic generators and servers stopped.\n")
 
 
 def create_network():
@@ -101,8 +137,12 @@ def create_network():
     info(">>> Running pingAll to verify connectivity …\n")
     net.pingAll()
 
-    # ── Drop to Mininet CLI for manual testing ────────────────────────────────
-    CLI(net)
+    # ── Drop to Mininet CLI with built-in QoS demo commands ───────────────────
+    info("\n" + "=" * 58 + "\n")
+    info("  READY! Type 'traffic' in the mininet prompt to start\n")
+    info("  the simultaneous multi-flow QoS experiment!\n")
+    info("=" * 58 + "\n\n")
+    QoSCLI(net)
 
     # ── Teardown ──────────────────────────────────────────────────────────────
     net.stop()
