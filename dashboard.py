@@ -272,16 +272,33 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const jitter = () => (Math.random() - 0.5) * 0.2;
         if (currentPhase === 1) {
           flows = [
-            { class_name: "High Priority (h1)", port: 5001, mbps: Math.max(0, 5.85 + jitter()), loss_pct: 0.1, latency_ms: 10.4 },
-            { class_name: "Medium Priority (h2)", port: 5002, mbps: Math.max(0, 2.92 + jitter()), loss_pct: 0.8, latency_ms: 11.2 },
-            { class_name: "Best Effort (h4)", port: 5003, mbps: Math.max(0, 0.98 + jitter()), loss_pct: 3.4, latency_ms: 14.5 }
+            { class_name: "Host h1 (Queue 0 - High)", port: 5001, mbps: Math.max(0, 5.85 + jitter()), loss_pct: 0.1, latency_ms: 10.4 },
+            { class_name: "Host h2 (Queue 1 - Med)", port: 5002, mbps: Math.max(0, 2.92 + jitter()), loss_pct: 0.8, latency_ms: 11.2 },
+            { class_name: "Host h4 (Queue 2 - Low)", port: 5003, mbps: Math.max(0, 0.98 + jitter()), loss_pct: 3.4, latency_ms: 14.5 }
           ];
         } else {
           flows = [
-            { class_name: "Demoted (h1)", port: 5001, mbps: Math.max(0, 1.02 + jitter()), loss_pct: 3.1, latency_ms: 14.2 },
-            { class_name: "Medium Priority (h2)", port: 5002, mbps: Math.max(0, 2.91 + jitter()), loss_pct: 0.9, latency_ms: 11.3 },
-            { class_name: "Promoted (h4)", port: 5003, mbps: Math.max(0, 5.82 + jitter()), loss_pct: 0.2, latency_ms: 10.5 }
+            { class_name: "Host h1 (Queue 0 - Demoted)", port: 5001, mbps: Math.max(0, 1.02 + jitter()), loss_pct: 3.1, latency_ms: 14.2 },
+            { class_name: "Host h2 (Queue 1 - Med)", port: 5002, mbps: Math.max(0, 2.91 + jitter()), loss_pct: 0.9, latency_ms: 11.3 },
+            { class_name: "Host h4 (Queue 2 - Promoted)", port: 5003, mbps: Math.max(0, 5.82 + jitter()), loss_pct: 0.2, latency_ms: 10.5 }
           ];
+        }
+      } else {
+        // Auto-detect phase from live rates
+        const h1Flow = flows.find(f => f.port === 5001);
+        const h4Flow = flows.find(f => f.port === 5003);
+        if (h1Flow && h4Flow) {
+          if (h4Flow.mbps > 4.0 && h1Flow.mbps < 2.5) {
+            currentPhase = 2;
+            updatePhaseUI();
+            h1Flow.class_name = "Host h1 [Demoted to 1 Mbps]";
+            h4Flow.class_name = "Host h4 [Promoted to 6 Mbps]";
+          } else if (h1Flow.mbps > 4.0) {
+            currentPhase = 1;
+            updatePhaseUI();
+            h1Flow.class_name = "Host h1 [High Priority - 6 Mbps]";
+            h4Flow.class_name = "Host h4 [Best Effort - 1 Mbps]";
+          }
         }
       }
 
