@@ -27,6 +27,16 @@ from mininet.log import setLogLevel, info
 import time
 
 
+def append_system_log(msg: str):
+    """Appends timestamped event string to shared logs file for dashboard."""
+    try:
+        ts = time.strftime("%H:%M:%S")
+        with open("/tmp/qos_logs.txt", "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
 class QoSCLI(CLI):
     """Custom Mininet CLI with built-in commands for the QoS demonstration."""
 
@@ -48,6 +58,7 @@ class QoSCLI(CLI):
         info("    • h2: Medium Priority (Video) -> 10 Mbps target -> Queue 1 (3 Mbps)\n")
         info("    • h4: Best Effort     (Bulk)  -> 10 Mbps target -> Queue 2 (1 Mbps)\n")
 
+        append_system_log(f"Mininet launched simultaneous UDP traffic across h1, h2, h4 (Duration: {duration}s)")
         h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate 10M --time {duration} &')
         h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate 10M --time {duration} &')
         h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate 10M --time {duration} &')
@@ -59,6 +70,7 @@ class QoSCLI(CLI):
         for h in self.mn.get('h1', 'h2', 'h3', 'h4'):
             h.cmd('pkill -9 -f udp_server.py')
             h.cmd('pkill -9 -f udp_client.py')
+        append_system_log("Mininet stopped all running UDP traffic generators")
         info("*** All UDP traffic generators and servers stopped.\n")
 
 

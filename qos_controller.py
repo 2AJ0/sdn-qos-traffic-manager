@@ -97,6 +97,17 @@ PRIORITY_TABLE_MISS = 0     # Catch-all → send to controller
 # Module-level helper: run a shell command
 # ──────────────────────────────────────────────────────────────────────────────
 
+def append_system_log(msg: str):
+    """Appends timestamped event string to shared logs file for dashboard."""
+    try:
+        import time
+        ts = time.strftime("%H:%M:%S")
+        with open("/tmp/qos_logs.txt", "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
+
+
 def _run(cmd: str, logger: logging.Logger) -> str:
     """Execute *cmd* in a subprocess shell; return stdout. Raises on failure."""
     logger.debug("CMD: %s", cmd)
@@ -321,6 +332,7 @@ class QoSController(app_manager.RyuApp):
             # ovs-vsctl prints one UUID per created object (qos, q0, q1, q2)
             uuids = uuids_raw.splitlines()
             self.logger.info("[QoS] HTB QoS created. UUIDs: %s", uuids)
+            append_system_log(f"OVS HTB QoS configured on port {s1_s2_port_name}: Queue 0 (6M), Queue 1 (3M), Queue 2 (1M)")
 
             # Cache UUIDs so update_queue_rates() can target queues directly
             if len(uuids) >= 4:
@@ -578,6 +590,7 @@ class QoSController(app_manager.RyuApp):
             success = self.update_queue_rates(datapath, QUEUE_CONFIG_PHASE2)
 
             if success:
+                append_system_log("SDN POLICY SWAP: Queue 0 demoted (6M -> 1M), Queue 2 promoted (1M -> 6M)")
                 self.logger.info(
                     "[DYN] Swap complete. h4 (Queue 2) now has priority (6 Mbps); "
                     "h1 (Queue 0) demoted to best-effort (1 Mbps)."

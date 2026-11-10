@@ -37,6 +37,17 @@ logging.basicConfig(
     datefmt="%H:%M:%S"
 )
 logger = logging.getLogger("UDPServer")
+LOGS_FILE = "/tmp/qos_logs.txt"
+
+
+def append_system_log(msg: str):
+    """Appends timestamped event string to shared logs file for dashboard."""
+    try:
+        ts = time.strftime("%H:%M:%S")
+        with open(LOGS_FILE, "a") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
 
 
 class FlowTracker:
@@ -144,6 +155,7 @@ class UDPMultiServer:
     def _listen_worker(self, port: int, sock: socket.socket):
         tracker = self.trackers[port]
         logger.info(f"Worker listening on port {port} [{tracker.class_name}]")
+        first_packet = True
         
         sock.setblocking(False)
         while self.running:
@@ -155,6 +167,9 @@ class UDPMultiServer:
             try:
                 data, addr = sock.recvfrom(65535)
                 recv_time = time.time()
+                if first_packet:
+                    append_system_log(f"Incoming traffic stream detected on port {port} from {addr[0]}")
+                    first_packet = False
                 if len(data) >= HEADER_SIZE:
                     seq_num, flow_id, send_time = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
                     tracker.record_packet(seq_num, send_time, len(data), recv_time)
@@ -166,6 +181,7 @@ class UDPMultiServer:
         logger.info("=" * 65)
         logger.info("       STARTING LOW-LEVEL MULTI-FLOW UDP QOS SERVER")
         logger.info("=" * 65)
+        append_system_log(f"UDP Server initialized on ports {self.ports}")
         
         for p in self.ports:
             # Low-level socket creation
