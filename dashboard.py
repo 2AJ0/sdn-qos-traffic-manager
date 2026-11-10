@@ -115,6 +115,83 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <button class="btn" style="background: #f59e0b; color: #000;" onclick="togglePhase()">Switch Dynamic Phase</button>
   </div>
 
+  <!-- Interactive Experiment Studio (Live Parameters Control) -->
+  <div class="section-card" style="border-color: #3b82f6;">
+    <div class="section-title">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 18px;">🎛️</span>
+        <span style="font-weight: 700; color: #38bdf8;">Interactive Experiment Studio</span>
+        <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #3b82f6; font-size: 11px;">Viva Interactive Mode</span>
+      </div>
+      <button class="btn" onclick="toggleStudioCollapse()" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155;">Toggle Studio</button>
+    </div>
+
+    <div id="studio-body">
+      <!-- Quick Viva Presets -->
+      <div style="margin-bottom: 16px;">
+        <span style="font-size: 12px; font-weight: 600; color: #94a3b8; margin-right: 10px;">Quick Presets:</span>
+        <div style="display: inline-flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('benchmark')">Standard Benchmark (10M each)</button>
+          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('overload')">Severe Overload (15M each = 45M load)</button>
+          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('two_flow')">2-Flow Contention (h1 & h2 only)</button>
+          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('single')">Single Flow Baseline (h1 only)</button>
+        </div>
+      </div>
+
+      <!-- Controls Grid -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px; background: #0b1120; padding: 16px; border-radius: 8px;">
+        <!-- Host h1 -->
+        <div style="border-left: 3px solid #ef4444; padding-left: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <label style="font-size: 13px; font-weight: 700; color: #fca5a5; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="cfg-h1-enable" checked> Host h1 (High / VoIP)
+            </label>
+            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h1-rate-val">10 Mbps</span>
+          </div>
+          <input type="range" id="cfg-h1-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h1')">
+        </div>
+
+        <!-- Host h2 -->
+        <div style="border-left: 3px solid #f59e0b; padding-left: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <label style="font-size: 13px; font-weight: 700; color: #fde68a; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="cfg-h2-enable" checked> Host h2 (Med / Video)
+            </label>
+            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h2-rate-val">10 Mbps</span>
+          </div>
+          <input type="range" id="cfg-h2-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h2')">
+        </div>
+
+        <!-- Host h4 -->
+        <div style="border-left: 3px solid #3b82f6; padding-left: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <label style="font-size: 13px; font-weight: 700; color: #bfdbfe; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="cfg-h4-enable" checked> Host h4 (Low / Bulk)
+            </label>
+            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h4-rate-val">10 Mbps</span>
+          </div>
+          <input type="range" id="cfg-h4-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h4')">
+        </div>
+
+        <!-- Duration -->
+        <div style="border-left: 3px solid #10b981; padding-left: 12px;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+            <label style="font-size: 13px; font-weight: 700; color: #a7f3d0;">Duration (Seconds)</label>
+            <span style="font-size: 12px; color: #34d399; font-weight: 700;" id="cfg-dur-val">40 s</span>
+          </div>
+          <input type="range" id="cfg-dur" min="10" max="60" value="40" step="5" style="width: 100%; cursor: pointer;" oninput="updateDurLabel()">
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <span style="font-size: 12px; color: #94a3b8;">Bottleneck capacity is strictly 10 Mbps. Aggregate load will test OVS HTB queue priority behavior!</span>
+        <button id="btn-custom-launch" class="btn" style="background: linear-gradient(90deg, #38bdf8, #2563eb); color: #fff; font-weight: 700; padding: 10px 24px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="launchCustomExperiment()">
+          <span>🚀</span> Launch Custom Experiment
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Network Topology Interactive View -->
   <div class="section-card">
     <div class="section-title">
@@ -400,6 +477,96 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       } catch (e) {}
     }
 
+    function toggleStudioCollapse() {
+      const b = document.getElementById('studio-body');
+      b.style.display = (b.style.display === 'none') ? 'block' : 'none';
+    }
+
+    function updateRateLabel(h) {
+      const val = document.getElementById(`cfg-${h}-rate`).value;
+      document.getElementById(`cfg-${h}-rate-val`).innerText = `${val} Mbps`;
+    }
+
+    function updateDurLabel() {
+      const val = document.getElementById('cfg-dur').value;
+      document.getElementById('cfg-dur-val').innerText = `${val} s`;
+    }
+
+    function setPreset(type) {
+      if (type === 'benchmark') {
+        document.getElementById('cfg-h1-enable').checked = true;
+        document.getElementById('cfg-h1-rate').value = 10;
+        document.getElementById('cfg-h2-enable').checked = true;
+        document.getElementById('cfg-h2-rate').value = 10;
+        document.getElementById('cfg-h4-enable').checked = true;
+        document.getElementById('cfg-h4-rate').value = 10;
+        document.getElementById('cfg-dur').value = 40;
+      } else if (type === 'overload') {
+        document.getElementById('cfg-h1-enable').checked = true;
+        document.getElementById('cfg-h1-rate').value = 15;
+        document.getElementById('cfg-h2-enable').checked = true;
+        document.getElementById('cfg-h2-rate').value = 15;
+        document.getElementById('cfg-h4-enable').checked = true;
+        document.getElementById('cfg-h4-rate').value = 15;
+        document.getElementById('cfg-dur').value = 40;
+      } else if (type === 'two_flow') {
+        document.getElementById('cfg-h1-enable').checked = true;
+        document.getElementById('cfg-h1-rate').value = 10;
+        document.getElementById('cfg-h2-enable').checked = true;
+        document.getElementById('cfg-h2-rate').value = 10;
+        document.getElementById('cfg-h4-enable').checked = false;
+        document.getElementById('cfg-dur').value = 30;
+      } else if (type === 'single') {
+        document.getElementById('cfg-h1-enable').checked = true;
+        document.getElementById('cfg-h1-rate').value = 10;
+        document.getElementById('cfg-h2-enable').checked = false;
+        document.getElementById('cfg-h4-enable').checked = false;
+        document.getElementById('cfg-dur').value = 25;
+      }
+      updateRateLabel('h1');
+      updateRateLabel('h2');
+      updateRateLabel('h4');
+      updateDurLabel();
+    }
+
+    async function launchCustomExperiment() {
+      const h1On = document.getElementById('cfg-h1-enable').checked;
+      const h1Rate = parseInt(document.getElementById('cfg-h1-rate').value, 10);
+      const h2On = document.getElementById('cfg-h2-enable').checked;
+      const h2Rate = parseInt(document.getElementById('cfg-h2-rate').value, 10);
+      const h4On = document.getElementById('cfg-h4-enable').checked;
+      const h4Rate = parseInt(document.getElementById('cfg-h4-rate').value, 10);
+      const dur = parseInt(document.getElementById('cfg-dur').value, 10);
+
+      const payload = {
+        action: "START",
+        duration: dur,
+        h1: { enabled: h1On, rate: h1Rate },
+        h2: { enabled: h2On, rate: h2Rate },
+        h4: { enabled: h4On, rate: h4Rate }
+      };
+
+      const btn = document.getElementById('btn-custom-launch');
+      btn.innerHTML = '<span>⏳</span> Launching...';
+      btn.disabled = true;
+
+      const now = new Date().toTimeString().split(' ')[0];
+      appendLogLine(now, "STUDIO", `🚀 Launching Custom Experiment (${dur}s): h1=${h1On ? h1Rate+'M':'OFF'}, h2=${h2On ? h2Rate+'M':'OFF'}, h4=${h4On ? h4Rate+'M':'OFF'}`, "#60a5fa");
+
+      try {
+        await fetch('/api/action/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      } catch (e) {}
+
+      setTimeout(() => {
+        btn.innerHTML = '<span>🚀</span> Launch Custom Experiment';
+        btn.disabled = false;
+      }, 3000);
+    }
+
     function clearLogs() {
       const term = document.getElementById('log-terminal');
       if (term) term.innerHTML = '';
@@ -475,10 +642,15 @@ CMD_FILE = "/tmp/qos_cmd.txt"
 
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
         if self.path == "/api/action/start":
             try:
                 with open(CMD_FILE, "w") as f:
-                    f.write("START\n")
+                    if body.strip().startswith("{"):
+                        f.write(body.strip() + "\n")
+                    else:
+                        f.write("START\n")
             except Exception:
                 pass
             self.send_response(200)

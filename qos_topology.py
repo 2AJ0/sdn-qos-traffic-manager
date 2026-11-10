@@ -37,8 +37,9 @@ def append_system_log(msg: str):
         pass
 
 
-def start_qos_traffic(net, duration="40"):
-    """Starts UDP server on h3 and simultaneous clients on h1, h2, h4."""
+def start_qos_traffic(net, config="40"):
+    """Starts UDP server on h3 and simultaneous clients on selected hosts with custom rates."""
+    import json
     h1, h2, h3, h4 = net.get('h1', 'h2', 'h3', 'h4')
     info("\n*** Stopping any existing traffic...\n")
     for h in [h1, h2, h3, h4]:
@@ -49,16 +50,42 @@ def start_qos_traffic(net, duration="40"):
     h3.cmd('python3 udp_server.py &')
     time.sleep(1.5)
 
-    info(f"*** Launching simultaneous UDP senders (Duration: {duration}s)...\n")
-    info("    • h1: High Priority   (VoIP)  -> 10 Mbps target -> Queue 0 (6 Mbps)\n")
-    info("    • h2: Medium Priority (Video) -> 10 Mbps target -> Queue 1 (3 Mbps)\n")
-    info("    • h4: Best Effort     (Bulk)  -> 10 Mbps target -> Queue 2 (1 Mbps)\n")
+    duration = "40"
+    h1_cfg = {"enabled": True, "rate": 10}
+    h2_cfg = {"enabled": True, "rate": 10}
+    h4_cfg = {"enabled": True, "rate": 10}
 
-    append_system_log(f"Mininet launched simultaneous UDP traffic across h1, h2, h4 (Duration: {duration}s)")
-    h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate 10M --time {duration} &')
-    h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate 10M --time {duration} &')
-    h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate 10M --time {duration} &')
+    if isinstance(config, dict):
+        duration = str(config.get("duration", 40))
+        h1_cfg = config.get("h1", h1_cfg)
+        h2_cfg = config.get("h2", h2_cfg)
+        h4_cfg = config.get("h4", h4_cfg)
+    elif isinstance(config, str) and config.strip().isdigit():
+        duration = config.strip()
 
+    info(f"*** Launching configured UDP senders (Duration: {duration}s)...\n")
+    active_hosts = []
+
+    if h1_cfg.get("enabled", True):
+        r1 = h1_cfg.get("rate", 10)
+        info(f"    • h1: High Priority   (VoIP)  -> {r1} Mbps target -> Queue 0 (6 Mbps)\n")
+        h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate {r1}M --time {duration} &')
+        active_hosts.append(f"h1 ({r1}M)")
+
+    if h2_cfg.get("enabled", True):
+        r2 = h2_cfg.get("rate", 10)
+        info(f"    • h2: Medium Priority (Video) -> {r2} Mbps target -> Queue 1 (3 Mbps)\n")
+        h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate {r2}M --time {duration} &')
+        active_hosts.append(f"h2 ({r2}M)")
+
+    if h4_cfg.get("enabled", True):
+        r4 = h4_cfg.get("rate", 10)
+        info(f"    • h4: Best Effort     (Bulk)  -> {r4} Mbps target -> Queue 2 (1 Mbps)\n")
+        h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate {r4}M --time {duration} &')
+        active_hosts.append(f"h4 ({r4}M)")
+
+    hosts_str = ", ".join(active_hosts) if active_hosts else "None"
+    append_system_log(f"Mininet launched experiment: [{hosts_str}] for {duration}s")
     info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
 
 
@@ -184,6 +211,14 @@ def create_network():
                         if cmd == "START":
                             info("\n[DASHBOARD TRIGGER] ▶ Start Traffic received from Web UI!\n")
                             start_qos_traffic(net, "40")
+                        elif cmd.startswith("{"):
+                            import json
+                            try:
+                                cfg = json.loads(cmd)
+                                info("\n[DASHBOARD TRIGGER] ▶ Custom Experiment received from Web UI!\n")
+                                start_qos_traffic(net, cfg)
+                            except Exception as e:
+                                info(f"\n[DASHBOARD ERROR] Failed to parse custom config: {e}\n")
                         elif cmd == "STOP":
                             info("\n[DASHBOARD TRIGGER] ⏹ Stop Traffic received from Web UI!\n")
                             stop_qos_traffic(net)
