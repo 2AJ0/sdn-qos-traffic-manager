@@ -94,9 +94,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <h1>QoS Traffic Management Visualizer</h1>
       <p>Low-Level UDP Socket & OpenFlow 1.3 SDN Dynamic Prioritization System</p>
     </div>
-    <div style="display: flex; gap: 12px; align-items: center;">
+    <div style="display: flex; gap: 10px; align-items: center;">
+      <button id="btn-start" class="btn" style="background: #10b981; color: #fff; font-weight: 700; padding: 8px 16px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="triggerStartTraffic()">
+        <span>▶</span> Start Traffic (40s)
+      </button>
+      <button id="btn-stop" class="btn" style="background: #ef4444; color: #fff; font-weight: 700; padding: 8px 16px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="triggerStopTraffic()">
+        <span>⏹</span> Stop
+      </button>
       <span id="source-badge" class="badge badge-sim"><span class="pulse"></span> Simulator Mode</span>
-      <button class="btn" onclick="toggleSimulator()">Toggle Mode</button>
+      <button class="btn" onclick="toggleSimulator()" style="background: #334155; color: #cbd5e1;">Toggle Mode</button>
     </div>
   </div>
 
@@ -371,6 +377,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       term.scrollTop = term.scrollHeight;
     }
 
+    async function triggerStartTraffic() {
+      const btn = document.getElementById('btn-start');
+      btn.innerHTML = '<span>⏳</span> Starting...';
+      btn.disabled = true;
+      const now = new Date().toTimeString().split(' ')[0];
+      appendLogLine(now, "UI ACTION", "▶ 1-Click Start Traffic sent to Mininet", "#10b981");
+      try {
+        await fetch('/api/action/start', { method: 'POST' });
+      } catch (e) {}
+      setTimeout(() => {
+        btn.innerHTML = '<span>▶</span> Start Traffic (40s)';
+        btn.disabled = false;
+      }, 3000);
+    }
+
+    async function triggerStopTraffic() {
+      const now = new Date().toTimeString().split(' ')[0];
+      appendLogLine(now, "UI ACTION", "⏹ Stop Traffic sent to Mininet", "#ef4444");
+      try {
+        await fetch('/api/action/stop', { method: 'POST' });
+      } catch (e) {}
+    }
+
     function clearLogs() {
       const term = document.getElementById('log-terminal');
       if (term) term.innerHTML = '';
@@ -442,8 +471,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 LOGS_FILE = "/tmp/qos_logs.txt"
+CMD_FILE = "/tmp/qos_cmd.txt"
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path == "/api/action/start":
+            try:
+                with open(CMD_FILE, "w") as f:
+                    f.write("START\n")
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status": "start_sent"}')
+        elif self.path == "/api/action/stop":
+            try:
+                with open(CMD_FILE, "w") as f:
+                    f.write("STOP\n")
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status": "stop_sent"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/?"):
             self.send_response(200)

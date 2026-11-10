@@ -37,41 +37,51 @@ def append_system_log(msg: str):
         pass
 
 
+def start_qos_traffic(net, duration="40"):
+    """Starts UDP server on h3 and simultaneous clients on h1, h2, h4."""
+    h1, h2, h3, h4 = net.get('h1', 'h2', 'h3', 'h4')
+    info("\n*** Stopping any existing traffic...\n")
+    for h in [h1, h2, h3, h4]:
+        h.cmd('pkill -9 -f udp_server.py')
+        h.cmd('pkill -9 -f udp_client.py')
+
+    info("*** Starting low-level UDP Server on h3 (listening on 5001, 5002, 5003)...\n")
+    h3.cmd('python3 udp_server.py &')
+    time.sleep(1.5)
+
+    info(f"*** Launching simultaneous UDP senders (Duration: {duration}s)...\n")
+    info("    • h1: High Priority   (VoIP)  -> 10 Mbps target -> Queue 0 (6 Mbps)\n")
+    info("    • h2: Medium Priority (Video) -> 10 Mbps target -> Queue 1 (3 Mbps)\n")
+    info("    • h4: Best Effort     (Bulk)  -> 10 Mbps target -> Queue 2 (1 Mbps)\n")
+
+    append_system_log(f"Mininet launched simultaneous UDP traffic across h1, h2, h4 (Duration: {duration}s)")
+    h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate 10M --time {duration} &')
+    h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate 10M --time {duration} &')
+    h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate 10M --time {duration} &')
+
+    info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
+
+
+def stop_qos_traffic(net):
+    """Stops all running UDP clients and servers."""
+    for h in net.get('h1', 'h2', 'h3', 'h4'):
+        h.cmd('pkill -9 -f udp_server.py')
+        h.cmd('pkill -9 -f udp_client.py')
+    append_system_log("Mininet stopped all running UDP traffic generators")
+    info("*** All UDP traffic generators and servers stopped.\n")
+
+
 class QoSCLI(CLI):
     """Custom Mininet CLI with built-in commands for the QoS demonstration."""
 
     def do_traffic(self, line):
         """Run simultaneous multi-class UDP QoS traffic across h1, h2, h4 to h3."""
-        h1, h2, h3, h4 = self.mn.get('h1', 'h2', 'h3', 'h4')
-        info("\n*** Stopping any existing traffic...\n")
-        for h in [h1, h2, h3, h4]:
-            h.cmd('pkill -9 -f udp_server.py')
-            h.cmd('pkill -9 -f udp_client.py')
-
-        info("*** Starting low-level UDP Server on h3 (listening on 5001, 5002, 5003)...\n")
-        h3.cmd('python3 udp_server.py &')
-        time.sleep(1.5)
-
         duration = line.strip() if line.strip().isdigit() else "40"
-        info(f"*** Launching simultaneous UDP senders (Duration: {duration}s)...\n")
-        info("    • h1: High Priority   (VoIP)  -> 10 Mbps target -> Queue 0 (6 Mbps)\n")
-        info("    • h2: Medium Priority (Video) -> 10 Mbps target -> Queue 1 (3 Mbps)\n")
-        info("    • h4: Best Effort     (Bulk)  -> 10 Mbps target -> Queue 2 (1 Mbps)\n")
-
-        append_system_log(f"Mininet launched simultaneous UDP traffic across h1, h2, h4 (Duration: {duration}s)")
-        h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate 10M --time {duration} &')
-        h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate 10M --time {duration} &')
-        h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate 10M --time {duration} &')
-
-        info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
+        start_qos_traffic(self.mn, duration)
 
     def do_stop_traffic(self, line):
         """Stop all running UDP client and server processes."""
-        for h in self.mn.get('h1', 'h2', 'h3', 'h4'):
-            h.cmd('pkill -9 -f udp_server.py')
-            h.cmd('pkill -9 -f udp_client.py')
-        append_system_log("Mininet stopped all running UDP traffic generators")
-        info("*** All UDP traffic generators and servers stopped.\n")
+        stop_qos_traffic(self.mn)
 
 
 def create_network():
@@ -149,10 +159,45 @@ def create_network():
     info(">>> Running pingAll to verify connectivity …\n")
     net.pingAll()
 
+    # ── Background listener for Dashboard 1-Click Start/Stop buttons ──────────
+    import os
+    import threading
+
+    CMD_FILE = "/tmp/qos_cmd.txt"
+    if os.path.exists(CMD_FILE):
+        try:
+            os.remove(CMD_FILE)
+        except Exception:
+            pass
+
+    def _dashboard_cmd_poller():
+        while True:
+            try:
+                if os.path.exists(CMD_FILE):
+                    with open(CMD_FILE, "r") as f:
+                        cmd = f.read().strip()
+                    if cmd:
+                        try:
+                            os.remove(CMD_FILE)
+                        except Exception:
+                            pass
+                        if cmd == "START":
+                            info("\n[DASHBOARD TRIGGER] ▶ Start Traffic received from Web UI!\n")
+                            start_qos_traffic(net, "40")
+                        elif cmd == "STOP":
+                            info("\n[DASHBOARD TRIGGER] ⏹ Stop Traffic received from Web UI!\n")
+                            stop_qos_traffic(net)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    poller_thread = threading.Thread(target=_dashboard_cmd_poller, daemon=True)
+    poller_thread.start()
+
     # ── Drop to Mininet CLI with built-in QoS demo commands ───────────────────
     info("\n" + "=" * 58 + "\n")
-    info("  READY! Type 'traffic' in the mininet prompt to start\n")
-    info("  the simultaneous multi-flow QoS experiment!\n")
+    info("  READY! Click 'Start Traffic' on http://localhost:8080 OR\n")
+    info("  type 'traffic' in the mininet prompt below!\n")
     info("=" * 58 + "\n\n")
     QoSCLI(net)
 
