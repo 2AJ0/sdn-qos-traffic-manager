@@ -90,6 +90,7 @@ def start_qos_traffic(net, config="40"):
     global CURRENT_EXPERIMENT_TIMER
     import json
     import threading
+    import urllib.request
     h1, h2, h3, h4 = net.get('h1', 'h2', 'h3', 'h4')
 
     # Cancel any existing timer
@@ -105,12 +106,31 @@ def start_qos_traffic(net, config="40"):
         h.cmd('pkill -9 -f udp_server.py')
         h.cmd('pkill -9 -f udp_client.py')
 
-    # ── RESET OVS queues back to Phase 1 before each experiment ─────────────
-    # This guarantees the swap always fires SWAP_DELAY_SECS after traffic
-    # starts, regardless of how long the Ryu controller has been running.
-    info("*** Resetting OVS HTB queues to Phase 1 (h1=6M, h2=3M, h4=1M)...\n")
-    _apply_queue_rates(_PHASE1_RATES)
-    append_system_log("OVS HTB queues reset to Phase 1 (h1=6Mbps, h2=3Mbps, h4=1Mbps)")
+    # ── Signal controller to reset Phase 1 queues & arm fresh swap timer ──────
+    # Primary: call the Ryu REST API so the controller owns the swap greenthread
+    # (cancels any previous greenthread, resets queues, arms a fresh timer).
+    # Fallback: apply queue rates locally if the REST API is unreachable.
+    info("*** Signalling controller to reset Phase 1 & arm swap timer...\n")
+    _ctrl_notified = False
+    try:
+        payload = json.dumps({"swap_delay": SWAP_DELAY_SECS}).encode()
+        req = urllib.request.Request(
+            "http://127.0.0.1:8081/qos/experiment/start",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            result = json.loads(resp.read().decode())
+            info(f"[CTRL] Controller acknowledged: {result}\n")
+            _ctrl_notified = True
+    except Exception as e:
+        info(f"[CTRL] REST call failed ({e}) — applying local Phase 1 reset as fallback\n")
+
+    if not _ctrl_notified:
+        # Fallback: topology resets queues and arms its own swap timer
+        _apply_queue_rates(_PHASE1_RATES)
+        append_system_log("OVS HTB queues reset to Phase 1 (h1=6Mbps, h2=3Mbps, h4=1Mbps)")
 
     try:
         with open("/tmp/qos_logs.txt", "w") as f:
@@ -159,7 +179,10 @@ def start_qos_traffic(net, config="40"):
     hosts_str = ", ".join(active_hosts) if active_hosts else "None"
     append_system_log(f"Mininet launched experiment: [{hosts_str}] for {dur}s")
 
-    # ── Dynamic policy swap timer (fires at exactly SWAP_DELAY_SECS after start) ──
+    # ── Dynamic policy swap timer — LOCAL FALLBACK only ───────────────────────
+    # When the controller REST call succeeded, the controller owns the swap
+    # greenthread.  We only arm a local timer here as a fallback when the REST
+    # call failed (_ctrl_notified is False from the outer scope via closure).
     def _do_swap():
         info(f"\n[DYN] Dynamic swap triggered at t={SWAP_DELAY_SECS}s — applying Phase 2 rates...\n")
         _apply_queue_rates(_PHASE2_RATES)
@@ -174,11 +197,12 @@ def start_qos_traffic(net, config="40"):
         stop_qos_traffic(net)
         append_system_log(f"Experiment duration ({dur}s) expired. Traffic stopped.")
 
-    # Arm swap timer (only if the experiment runs long enough for the swap)
-    if SWAP_DELAY_SECS < dur:
+    # Arm local swap timer only when the controller REST call failed
+    if not _ctrl_notified and SWAP_DELAY_SECS < dur:
         swap_timer = threading.Timer(SWAP_DELAY_SECS, _do_swap)
         swap_timer.daemon = True
         swap_timer.start()
+        info(f"[CTRL] Local fallback swap timer armed (fires in {SWAP_DELAY_SECS}s)\n")
 
     CURRENT_EXPERIMENT_TIMER = threading.Timer(dur + 0.5, _auto_stop_task)
     CURRENT_EXPERIMENT_TIMER.daemon = True

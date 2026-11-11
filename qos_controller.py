@@ -28,11 +28,12 @@ Dynamic Policy Swap (NEW)
 
 Usage
 -----
-  ryu-manager qos_controller.py --ofp-tcp-listen-port 6653
+  ryu-manager qos_controller.py --ofp-tcp-listen-port 6653 --wsapi-port 8081
 """
 
 from __future__ import annotations
 import re
+import json
 import subprocess
 import logging
 from typing import Dict, List, Optional, Set, Tuple
@@ -44,6 +45,8 @@ from ryu.lib import hub                          # Ryu's cooperative greenthread
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import packet, ethernet, arp, ipv4
 from ryu.lib.packet import ether_types
+from ryu.app.wsgi import ControllerBase, WSGIApplication, route
+from webob import Response
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -133,9 +136,12 @@ class QoSController(app_manager.RyuApp):
       • Bidirectional explicit flows (forward + reverse)
       • Reactive L2 learning switch (ARP + unknown unicast)
       • Dynamic mid-run policy swap via ryu.lib.hub greenthread
+      • REST API (port 8081) to reset and re-arm the swap timer per experiment
     """
 
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    # Register WSGI so Ryu manages our REST API alongside the OpenFlow server
+    _CONTEXTS = {"wsgi": WSGIApplication}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -155,10 +161,21 @@ class QoSController(app_manager.RyuApp):
         # _qos_uuid[port_name] = {"qos_uuid": str, "queue_uuids": {qid: str}}
         self._qos_meta: Dict[str, dict] = {}
 
+        # Greenthread handle for the current swap timer (so we can cancel it)
+        self._swap_greenthread = None
+
+        # Store the last known datapath for s1 so the REST API can use it
+        self._s1_datapath = None
+
         self.logger.info("=" * 60)
         self.logger.info("  QoS SDN Controller starting (OpenFlow 1.3)")
         self.logger.info("  Dynamic swap fires after %d s", DYNAMIC_SWAP_DELAY_SECS)
+        self.logger.info("  REST API available on port 8081")
         self.logger.info("=" * 60)
+
+        # Register our REST controller with Ryu's WSGI server
+        wsgi = kwargs["wsgi"]
+        wsgi.register(QoSRestController, {"qos_controller": self})
 
     # ──────────────────────────────────────────────────────────────
     # 1. Switch Handshake – Features Reply
@@ -354,6 +371,10 @@ class QoSController(app_manager.RyuApp):
         # ── Install proactive IP + DSCP + reverse flows ───────────────────────
         self._install_qos_flows(datapath, s1_s2_port_no)
         self._qos_installed.add(dpid)
+
+        # Store s1 datapath reference for use by the REST API
+        if dpid == QOS_SWITCH_DPID:
+            self._s1_datapath = datapath
 
         # ── Spawn dynamic-swap background timer (NEW) ─────────────────────────
         self.start_dynamic_swap_timer(datapath, delay_seconds=DYNAMIC_SWAP_DELAY_SECS)
@@ -600,11 +621,68 @@ class QoSController(app_manager.RyuApp):
                     "[DYN] Swap finished with errors — check logs above."
                 )
 
-        # Spawn as a detached greenthread; returns immediately to the caller
-        hub.spawn(_swap_task)
+        # Spawn as a tracked greenthread so it can be cancelled on experiment restart
+        self._swap_greenthread = hub.spawn(_swap_task)
         self.logger.info(
             "[DYN] Background swap timer spawned (fires in %d s)", delay_seconds
         )
+
+    # ──────────────────────────────────────────────────────────────
+    # 5b. REST-triggered experiment reset (NEW)
+    # ──────────────────────────────────────────────────────────────
+
+    def reset_and_rearm_swap(self, delay_seconds: int = None) -> bool:
+        """
+        Called by QoSRestController when a new experiment begins via POST
+        /qos/experiment/start.
+
+        Steps:
+          1. Cancel any pending swap greenthread from a previous experiment.
+          2. Reset OVS HTB queues back to Phase 1 rates.
+          3. Arm a fresh swap timer starting now.
+
+        This guarantees that every experiment sees Phase 1 → Phase 2 at
+        exactly *delay_seconds* after traffic starts, even when the Ryu
+        controller has been running for a long time.
+
+        Args:
+            delay_seconds: Seconds until the Phase 2 swap.  Defaults to
+                           DYNAMIC_SWAP_DELAY_SECS if not specified.
+
+        Returns:
+            True if the queue reset succeeded; False otherwise.
+        """
+        if delay_seconds is None:
+            delay_seconds = DYNAMIC_SWAP_DELAY_SECS
+
+        # ── 1. Cancel the previous swap greenthread ───────────────────────────
+        if self._swap_greenthread is not None:
+            try:
+                self._swap_greenthread.kill()
+                self.logger.info("[REST] Previous swap greenthread cancelled.")
+            except Exception as exc:
+                self.logger.warning("[REST] Could not cancel greenthread: %s", exc)
+            self._swap_greenthread = None
+
+        # ── 2. Verify s1 is connected ─────────────────────────────────────────
+        if self._s1_datapath is None:
+            self.logger.error(
+                "[REST] reset_and_rearm_swap: s1 datapath not yet available — "
+                "did the switch connect to the controller?"
+            )
+            return False
+
+        # ── 3. Reset HTB queues to Phase 1 ───────────────────────────────────
+        self.logger.info("[REST] Resetting OVS queues to Phase 1 for new experiment …")
+        ok = self.update_queue_rates(self._s1_datapath, QUEUE_CONFIG_PHASE1)
+        append_system_log(
+            "OVS HTB queues reset to Phase 1 (h1=6Mbps, h2=3Mbps, h4=1Mbps)"
+        )
+
+        # ── 4. Arm a fresh swap timer ─────────────────────────────────────────
+        self.start_dynamic_swap_timer(self._s1_datapath, delay_seconds)
+        self.logger.info("[REST] New swap timer armed (%d s)", delay_seconds)
+        return ok
 
     # ──────────────────────────────────────────────────────────────
     # 6. Packet-In Handler (Reactive L2 Learning Switch)
@@ -737,3 +815,73 @@ class QoSController(app_manager.RyuApp):
 
         mod = parser.OFPFlowMod(**kwargs)
         datapath.send_msg(mod)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REST API Controller  (Ryu WSGI sub-application, port 8081)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class QoSRestController(ControllerBase):
+    """
+    Thin REST adapter that lets external processes (qos_topology.py, the
+    dashboard, scripts) signal per-experiment lifecycle events to the Ryu
+    controller without restarting it.
+
+    Endpoints
+    ---------
+    POST /qos/experiment/start
+        Body (optional JSON): {"swap_delay": <int>}
+        Resets OVS queues to Phase 1 and arms a fresh swap timer.
+        Returns: {"status": "ok"|"error", "swap_in": <seconds>}
+
+    GET  /qos/status
+        Returns current controller state (switch connected, swap delay).
+
+    Usage
+    -----
+    Start ryu-manager with --wsapi-port 8081:
+        sudo ryu-manager qos_controller.py --observe-links \\
+            --ofp-tcp-listen-port 6653 --wsapi-port 8081
+    """
+
+    def __init__(self, req, link, data, **config):
+        super().__init__(req, link, data, **config)
+        self.qos_app: QoSController = data["qos_controller"]
+
+    @route("qos", "/qos/experiment/start", methods=["POST"])
+    def start_experiment(self, req, **kwargs):
+        """
+        Called by qos_topology.py when a new experiment begins.
+        Resets queues to Phase 1 and arms a fresh swap timer.
+
+        Optional JSON body::
+
+            {"swap_delay": 20}
+
+        If omitted, DYNAMIC_SWAP_DELAY_SECS is used.
+        """
+        body_str = req.body.decode("utf-8").strip() if req.body else "{}"
+        try:
+            cfg = json.loads(body_str) if body_str else {}
+        except Exception:
+            cfg = {}
+
+        delay = int(cfg.get("swap_delay", DYNAMIC_SWAP_DELAY_SECS))
+        success = self.qos_app.reset_and_rearm_swap(delay)
+
+        resp_body = json.dumps({
+            "status": "ok" if success else "error",
+            "swap_in": delay,
+        })
+        return Response(content_type="application/json", body=resp_body.encode())
+
+    @route("qos", "/qos/status", methods=["GET"])
+    def get_status(self, req, **kwargs):
+        """Return basic controller health / state."""
+        body = json.dumps({
+            "controller": "QoSController",
+            "swap_delay_secs": DYNAMIC_SWAP_DELAY_SECS,
+            "s1_connected": self.qos_app._s1_datapath is not None,
+            "s1_s2_port": S1_S2_PORT_NAME,
+        })
+        return Response(content_type="application/json", body=body.encode())
