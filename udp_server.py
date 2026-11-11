@@ -12,6 +12,7 @@ Demonstrates low-level socket programming:
   - Real-time JSON export for live Web Dashboard integration
 """
 
+import os
 import sys
 import time
 import json

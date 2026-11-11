@@ -790,9 +790,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception:
                     data = {}
 
-            # Check staleness: If stats timestamp is older than 2.8 seconds, traffic has stopped!
+            # Safety fallback: if the file is VERY stale (>10s), traffic has definitely stopped.
+            # We rely on stop_qos_traffic() writing explicit zeros for the normal stop path.
             file_time = data.get("timestamp", 0)
-            if time.time() - file_time > 2.8:
+            if time.time() - file_time > 10.0:
                 data = {
                     "timestamp": time.time(),
                     "total_mbps": 0.0,
