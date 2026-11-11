@@ -566,10 +566,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       }, 3000);
     }
 
-    function clearLogs() {
+    async function clearLogs() {
       const term = document.getElementById('log-terminal');
       if (term) term.innerHTML = '';
       lastLogCount = 0;
+      try {
+        await fetch('/api/logs/clear', { method: 'POST' });
+      } catch (e) {}
     }
 
     async function fetchLogs(flows, totalMbps) {
@@ -593,19 +596,27 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         try {
           const res = await fetch('/api/logs');
           const data = await res.json();
-          if (data && data.logs && data.logs.length > lastLogCount) {
-            const newLines = data.logs.slice(lastLogCount);
-            newLines.forEach(l => {
-              let tag = "SYSTEM";
-              let color = "#38bdf8";
-              if (l.includes("SWAP") || l.includes("POLICY")) { tag = "SDN SWAP"; color = "#f59e0b"; }
-              else if (l.includes("DROP") || l.includes("FAIL") || l.includes("Error")) { tag = "WARN"; color = "#ef4444"; }
-              else if (l.includes("OK") || l.includes("Promoted")) { tag = "SUCCESS"; color = "#10b981"; }
-              else if (l.includes("UDP") || l.includes("Port")) { tag = "SOCKET"; color = "#a855f7"; }
-              appendLogLine(now, tag, l, color);
-            });
-            lastLogCount = data.logs.length;
-            return;
+          if (data && data.logs) {
+            if (data.logs.length < lastLogCount) {
+              // Logs were cleared on server!
+              lastLogCount = 0;
+              const term = document.getElementById('log-terminal');
+              if (term) term.innerHTML = '';
+            }
+            if (data.logs.length > lastLogCount) {
+              const newLines = data.logs.slice(lastLogCount);
+              newLines.forEach(l => {
+                let tag = "SYSTEM";
+                let color = "#38bdf8";
+                if (l.includes("SWAP") || l.includes("POLICY")) { tag = "SDN SWAP"; color = "#f59e0b"; }
+                else if (l.includes("DROP") || l.includes("FAIL") || l.includes("Error")) { tag = "WARN"; color = "#ef4444"; }
+                else if (l.includes("OK") || l.includes("Promoted")) { tag = "SUCCESS"; color = "#10b981"; }
+                else if (l.includes("UDP") || l.includes("Port")) { tag = "SOCKET"; color = "#a855f7"; }
+                appendLogLine(now, tag, l, color);
+              });
+              lastLogCount = data.logs.length;
+              return;
+            }
           }
         } catch (e) {}
       }
@@ -640,6 +651,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
         if self.path == "/api/action/start":
             try:
+                # Clear previous experiment logs on disk
+                with open(LOGS_FILE, "w") as f:
+                    f.truncate(0)
+            except Exception:
+                pass
+            try:
                 with open(CMD_FILE, "w") as f:
                     if body.strip().startswith("{"):
                         f.write(body.strip() + "\n")
@@ -652,6 +669,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(b'{"status": "start_sent"}')
+        elif self.path == "/api/logs/clear":
+            try:
+                with open(LOGS_FILE, "w") as f:
+                    f.truncate(0)
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status": "logs_cleared"}')
         elif self.path == "/api/action/stop":
             try:
                 with open(CMD_FILE, "w") as f:

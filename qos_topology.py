@@ -46,6 +46,12 @@ def start_qos_traffic(net, config="40"):
         h.cmd('pkill -9 -f udp_server.py')
         h.cmd('pkill -9 -f udp_client.py')
 
+    try:
+        with open("/tmp/qos_logs.txt", "w") as f:
+            f.truncate(0)
+    except Exception:
+        pass
+
     info("*** Starting low-level UDP Server on h3 (listening on 5001, 5002, 5003)...\n")
     h3.cmd('python3 udp_server.py &')
     time.sleep(1.5)
