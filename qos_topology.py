@@ -24,7 +24,52 @@ from mininet.node import OVSSwitch, RemoteController
 from mininet.cli import CLI
 from mininet.link import TCLink
 from mininet.log import setLogLevel, info
+import os
+import subprocess
 import time
+
+
+# OVS queue min-rates for each phase (in bps)
+_PHASE1_RATES = {0: 6_000_000, 1: 3_000_000, 2: 1_000_000}   # h1 High, h2 Med, h4 Low
+_PHASE2_RATES = {0: 1_000_000, 1: 3_000_000, 2: 6_000_000}   # h1 Demoted, h2 unchanged, h4 Promoted
+
+# How long after traffic starts before the dynamic queue swap fires (seconds).
+# Change this value to adjust when the swap happens.
+SWAP_DELAY_SECS: int = 20
+
+
+def _run_ovs(cmd: str) -> str:
+    """Run an ovs-vsctl command and return stdout (empty string on failure)."""
+    try:
+        return subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return ""
+
+
+def _apply_queue_rates(rates: dict):
+    """
+    Apply a dict of {queue_id: min_rate_bps} to the OVS HTB queues on s1's
+    egress port toward s2.  Looks up the port and queue UUIDs dynamically so
+    this works even if the controller re-created them.
+    """
+    try:
+        # Find s1's egress port toward s2 (the inter-switch link)
+        port_name = _run_ovs("ovs-vsctl list-ports s1")
+        # Pick the port that is NOT connected to a host (eth1-eth3 are hosts, eth4 is s2)
+        ports = [p for p in port_name.splitlines() if p.startswith("s1-eth")]
+        # The highest-numbered port is typically the inter-switch link
+        egress = sorted(ports)[-1] if ports else ""
+        if not egress:
+            return
+        qos_uuid = _run_ovs(f"ovs-vsctl get port {egress} qos").strip("[]").strip()
+        if not qos_uuid or qos_uuid == "[]":
+            return
+        for qid, rate_bps in rates.items():
+            q_uuid = _run_ovs(f"ovs-vsctl get qos {qos_uuid} queues:{qid}").strip()
+            if q_uuid:
+                _run_ovs(f"ovs-vsctl set queue {q_uuid} other-config:min-rate={rate_bps}")
+    except Exception:
+        pass
 
 
 def append_system_log(msg: str):
@@ -60,6 +105,13 @@ def start_qos_traffic(net, config="40"):
         h.cmd('pkill -9 -f udp_server.py')
         h.cmd('pkill -9 -f udp_client.py')
 
+    # ── RESET OVS queues back to Phase 1 before each experiment ─────────────
+    # This guarantees the swap always fires SWAP_DELAY_SECS after traffic
+    # starts, regardless of how long the Ryu controller has been running.
+    info("*** Resetting OVS HTB queues to Phase 1 (h1=6M, h2=3M, h4=1M)...\n")
+    _apply_queue_rates(_PHASE1_RATES)
+    append_system_log("OVS HTB queues reset to Phase 1 (h1=6Mbps, h2=3Mbps, h4=1Mbps)")
+
     try:
         with open("/tmp/qos_logs.txt", "w") as f:
             f.truncate(0)
@@ -83,7 +135,7 @@ def start_qos_traffic(net, config="40"):
     elif isinstance(config, (str, int)) and str(config).strip().isdigit():
         dur = int(str(config).strip())
 
-    info(f"*** Launching UDP senders for EXACTLY {dur} seconds...\n")
+    info(f"*** Launching UDP senders for EXACTLY {dur} seconds (swap at t={SWAP_DELAY_SECS}s)...\n")
     active_hosts = []
 
     if h1_cfg.get("enabled", True):
@@ -107,17 +159,33 @@ def start_qos_traffic(net, config="40"):
     hosts_str = ", ".join(active_hosts) if active_hosts else "None"
     append_system_log(f"Mininet launched experiment: [{hosts_str}] for {dur}s")
 
-    # Auto-stop timer to strictly end the experiment after duration
+    # ── Dynamic policy swap timer (fires at exactly SWAP_DELAY_SECS after start) ──
+    def _do_swap():
+        info(f"\n[DYN] Dynamic swap triggered at t={SWAP_DELAY_SECS}s — applying Phase 2 rates...\n")
+        _apply_queue_rates(_PHASE2_RATES)
+        swap_msg = (f"SDN POLICY SWAP: Queue 0 demoted (6M -> 1M), "
+                    f"Queue 2 promoted (1M -> 6M)")
+        append_system_log(swap_msg)
+        info(f"[DYN] {swap_msg}\n")
+
+    # ── Auto-stop timer (fires dur seconds after start) ───────────────────────
     def _auto_stop_task():
         info(f"\n[TIMER] Experiment duration ({dur}s) reached! Force-stopping traffic...\n")
         stop_qos_traffic(net)
         append_system_log(f"Experiment duration ({dur}s) expired. Traffic stopped.")
 
+    # Arm swap timer (only if the experiment runs long enough for the swap)
+    if SWAP_DELAY_SECS < dur:
+        swap_timer = threading.Timer(SWAP_DELAY_SECS, _do_swap)
+        swap_timer.daemon = True
+        swap_timer.start()
+
     CURRENT_EXPERIMENT_TIMER = threading.Timer(dur + 0.5, _auto_stop_task)
     CURRENT_EXPERIMENT_TIMER.daemon = True
     CURRENT_EXPERIMENT_TIMER.start()
 
-    info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
+    info(f"*** Traffic started! Swap fires at t={SWAP_DELAY_SECS}s. "
+         f"Open http://localhost:8080 to watch! ***\n\n")
 
 
 def stop_qos_traffic(net):
