@@ -560,7 +560,7 @@ HTML_PAGE = """<!DOCTYPE html>
   function startTraffic() {
     resetStatsVisuals();
     startSwapCountdown(20);
-    fetch('/api/action/start', { method: 'POST', body: '40' });
+    fetch('/api/action/start', { method: 'POST', body: 'START' });
   }
 
   function stopTraffic() {

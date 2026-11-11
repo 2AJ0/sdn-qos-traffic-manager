@@ -387,9 +387,10 @@ def create_network():
                     pass
 
             if cmd:
-                if cmd == "START":
-                    info("\n[DASHBOARD TRIGGER] ▶ Start Traffic received from Web UI!\n")
-                    start_qos_traffic(net, "40")
+                if cmd == "START" or (isinstance(cmd, str) and cmd.strip().isdigit()):
+                    dur = cmd.strip() if cmd.strip().isdigit() else "40"
+                    info(f"\n[DASHBOARD TRIGGER] ▶ Start Traffic ({dur}s) received from Web UI!\n")
+                    start_qos_traffic(net, dur)
                 elif cmd == "STOP":
                     info("\n[DASHBOARD TRIGGER] ⏹ Stop Traffic received from Web UI!\n")
                     stop_qos_traffic(net)
