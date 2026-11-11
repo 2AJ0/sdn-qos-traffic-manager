@@ -112,7 +112,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span style="font-weight: 700; color: #38bdf8;">ACTIVE SDN POLICY: </span>
       <span id="policy-label" style="font-weight: 600;">Phase 1 — Initial Priority (h1 High: 6 Mbps, h2 Med: 3 Mbps, h4 Low: 1 Mbps)</span>
     </div>
-    <button class="btn" style="background: #f59e0b; color: #000;" onclick="togglePhase()">Switch Dynamic Phase</button>
   </div>
 
   <!-- Interactive Experiment Studio (Live Parameters Control) -->
@@ -121,7 +120,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div style="display: flex; align-items: center; gap: 8px;">
         <span style="font-size: 18px;">🎛️</span>
         <span style="font-weight: 700; color: #38bdf8;">Interactive Experiment Studio</span>
-        <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #3b82f6; font-size: 11px;">Viva Live Control</span>
       </div>
       <button class="btn" onclick="toggleStudioCollapse()" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155;">Toggle Studio</button>
     </div>
