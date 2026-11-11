@@ -156,9 +156,9 @@ Open **three separate terminal windows/tabs** in your Ubuntu system:
 > **Important**: The controller must be run with `sudo` because it executes `ovs-vsctl` commands to create and modify OVS kernel queues in `/var/run/openvswitch/db.sock`.
 
 ```bash
-sudo /home/$USER/ryu-env/bin/ryu-manager qos_controller.py --ofp-tcp-listen-port 6653 --verbose
+sudo /home/$USER/ryu-env/bin/ryu-manager qos_controller.py --observe-links --ofp-tcp-listen-port 6653 --wsapi-port 8081
 ```
-*(Or if Ryu is installed in your main Python environment: `sudo ryu-manager qos_controller.py --ofp-tcp-listen-port 6653 --verbose`)*
+*(Or if Ryu is installed in your main Python environment: `sudo ryu-manager qos_controller.py --observe-links --ofp-tcp-listen-port 6653 --wsapi-port 8081`)*
 
 ### Terminal 2: Start the Mininet Topology
 ```bash
