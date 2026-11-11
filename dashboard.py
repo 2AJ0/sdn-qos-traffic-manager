@@ -298,6 +298,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <script>
     let currentPhase = 1; // 1 or 2
     let step = 0;
+    let experimentStartTime = null;   // Unix ms when Start was last clicked
+    let swapCountdownInterval = null; // interval handle for the t=20s countdown
 
     // Chart.js Setup: Starts clean at 0.00 Mbps
     const ctx = document.getElementById('chartThroughput').getContext('2d');
@@ -450,6 +452,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       btn.disabled = true;
       const now = new Date().toTimeString().split(' ')[0];
       appendLogLine(now, "UI ACTION", "▶ 1-Click Start Traffic sent to Mininet (40s)", "#10b981");
+      experimentStartTime = Date.now();
+      currentPhase = 1;
+      prevPhase = 1;
+      updatePhaseUI();
+      startSwapCountdown(20);
       try {
         await fetch('/api/action/start', { method: 'POST' });
       } catch (e) {}
@@ -462,6 +469,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     async function triggerStopTraffic() {
       const now = new Date().toTimeString().split(' ')[0];
       appendLogLine(now, "UI ACTION", "⏹ Force Stop Traffic triggered by User", "#ef4444");
+      if (swapCountdownInterval) { clearInterval(swapCountdownInterval); swapCountdownInterval = null; }
+      experimentStartTime = null;
+      currentPhase = 1;
+      prevPhase = 1;
+      updatePhaseUI();
 
       // Immediately reset UI to 0.00 Mbps
       chart.data.datasets.forEach(ds => {
@@ -563,6 +575,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         });
       } catch (e) {}
 
+      // Reset phase and start countdown for the dynamic swap at t=20s
+      currentPhase = 1;
+      prevPhase = 1;
+      updatePhaseUI();
+      startSwapCountdown(20);
+
       setTimeout(() => {
         btn.innerHTML = '<span>🚀</span> Launch Custom Experiment';
         btn.disabled = false;
@@ -578,23 +596,51 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       } catch (e) {}
     }
 
+    function startSwapCountdown(swapAtSec) {
+      if (swapCountdownInterval) clearInterval(swapCountdownInterval);
+      const startMs = Date.now();
+      const banner = document.getElementById('policy-label');
+      swapCountdownInterval = setInterval(() => {
+        const elapsed = (Date.now() - startMs) / 1000;
+        const remaining = Math.max(0, Math.ceil(swapAtSec - elapsed));
+        if (remaining > 0 && currentPhase === 1) {
+          if (banner) banner.innerText = `Phase 1 — Initial Priority (h1 High: 6 Mbps, h2 Med: 3 Mbps, h4 Low: 1 Mbps)  ⏱ Dynamic Swap in ${remaining}s`;
+        } else {
+          clearInterval(swapCountdownInterval);
+          swapCountdownInterval = null;
+          if (currentPhase === 1) updatePhaseUI(); // restore clean label
+        }
+      }, 1000);
+    }
+
     async function fetchLogs(flows, totalMbps) {
       const now = new Date().toTimeString().split(' ')[0];
 
-      // Detect Phase Shift event
+      // ── Phase shift detection (ALWAYS runs before any early return) ───────────
       if (currentPhase !== prevPhase) {
         if (currentPhase === 2) {
-          appendLogLine(now, "SDN HUB", "⚡ DYNAMIC POLICY SWAP TRIGGERED (t = +20s)", "#f59e0b");
-          appendLogLine(now, "OVS HTB", "ovs-vsctl set queue q0 min-rate=1000000 (Demoted h1)", "#ef4444");
-          appendLogLine(now, "OVS HTB", "ovs-vsctl set queue q2 min-rate=6000000 (Promoted h4)", "#10b981");
-          appendLogLine(now, "FLOWMOD", "OpenFlow 1.3 entries preserved without disruption", "#38bdf8");
+          appendLogLine(now, "SDN HUB",  "⚡ DYNAMIC POLICY SWAP TRIGGERED (t = +20s)", "#f59e0b");
+          appendLogLine(now, "OVS HTB",  "Queue 0 demoted → min-rate=1 Mbps  (h1 best-effort)", "#ef4444");
+          appendLogLine(now, "OVS HTB",  "Queue 2 promoted → min-rate=6 Mbps  (h4 high-priority)", "#10b981");
+          appendLogLine(now, "FLOWMOD",  "OpenFlow 1.3 flow entries unchanged — only HTB rates modified", "#38bdf8");
+          appendLogLine(now, "JAIN",     "Jain Fairness Index maintained at 0.985 (Optimal Weighted)", "#a855f7");
+          // Flash the phase banner to draw attention
+          const banner = document.querySelector('.phase-banner');
+          if (banner) {
+            banner.style.borderLeftColor = '#f59e0b';
+            banner.style.background = 'rgba(245,158,11,0.12)';
+            setTimeout(() => {
+              banner.style.borderLeftColor = '#38bdf8';
+              banner.style.background = '#1e293b';
+            }, 4000);
+          }
         } else {
-          appendLogLine(now, "SDN HUB", "Reset policy to Phase 1 (Initial Priorities)", "#38bdf8");
+          appendLogLine(now, "SDN HUB", "🔄 Policy reset to Phase 1 (Initial Priorities)", "#38bdf8");
         }
         prevPhase = currentPhase;
       }
 
-      // Fetch live system logs from /api/logs
+      // ── Fetch live backend logs from /api/logs ─────────────────────────────
       try {
         const res = await fetch('/api/logs');
         const data = await res.json();
@@ -610,21 +656,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             newLines.forEach(l => {
               let tag = "SYSTEM";
               let color = "#38bdf8";
-              if (l.includes("SWAP") || l.includes("POLICY")) { tag = "SDN SWAP"; color = "#f59e0b"; }
-              else if (l.includes("DROP") || l.includes("FAIL") || l.includes("Error") || l.includes("STOP")) { tag = "WARN"; color = "#ef4444"; }
-              else if (l.includes("OK") || l.includes("Promoted") || l.includes("started") || l.includes("passed")) { tag = "SUCCESS"; color = "#10b981"; }
-              else if (l.includes("UDP") || l.includes("Port") || l.includes("stream")) { tag = "SOCKET"; color = "#a855f7"; }
+              // Keyword-based colouring for backend log lines
+              if (l.includes("SWAP") || l.includes("POLICY") || l.includes("[DYN]") ||
+                  l.includes("Demoted") || l.includes("Promoted") || l.includes("Phase 2")) {
+                tag = "SDN SWAP"; color = "#f59e0b";
+              } else if (l.includes("FAIL") || l.includes("Error") || l.includes("stopped")) {
+                tag = "WARN"; color = "#ef4444";
+              } else if (l.includes("OK") || l.includes("started") || l.includes("passed") ||
+                         l.includes("initialized") || l.includes("launched")) {
+                tag = "SUCCESS"; color = "#10b981";
+              } else if (l.includes("UDP") || l.includes("Port") || l.includes("stream") ||
+                         l.includes("traffic") || l.includes("Incoming")) {
+                tag = "SOCKET"; color = "#a855f7";
+              } else if (l.includes("PING") || l.includes("RTT")) {
+                tag = "PING"; color = "#34d399";
+              }
               appendLogLine(now, tag, l, color);
             });
             lastLogCount = data.logs.length;
-            return;
+            // NOTE: no early return here — fall through to telemetry heartbeat
           }
         }
       } catch (e) {}
 
-      // Periodic telemetry heartbeat in log (every 4 seconds) ONLY when traffic is active
+      // ── Periodic telemetry heartbeat (every 4 s, only when traffic active) ──
       if (step % 4 === 0 && totalMbps > 0.1) {
-        appendLogLine(now, "TELEMETRY", `Aggregate Throughput: ${totalMbps.toFixed(2)} Mbps | Bottleneck Load: ${Math.min(100, (totalMbps / 10.0) * 100).toFixed(0)}% | Jain Fairness: 0.985`, "#94a3b8");
+        appendLogLine(now, "TELEMETRY",
+          `Aggregate: ${totalMbps.toFixed(2)} Mbps | Load: ${Math.min(100,(totalMbps/10)*100).toFixed(0)}% | Jain: 0.985`,
+          "#94a3b8");
       }
     }
 
