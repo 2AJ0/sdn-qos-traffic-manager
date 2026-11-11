@@ -287,8 +287,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #38bdf8; font-size: 11px; padding: 2px 8px;">Streaming</span>
       </div>
       <div style="display: flex; gap: 8px;">
-        <button class="btn" onclick="addSampleLog()" style="padding: 4px 10px; font-size: 11px; background: #334155; color: #cbd5e1;">Test Ping</button>
-        <button class="btn" onclick="clearLogs()" style="padding: 4px 10px; font-size: 11px; background: #334155; color: #cbd5e1;">Clear</button>
+        <button class="btn" onclick="clearLogs()" style="padding: 4px 10px; font-size: 11px; background: #334155; color: #cbd5e1;">Clear Logs</button>
       </div>
     </div>
     <div id="log-terminal" style="background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; height: 210px; overflow-y: auto; font-family: 'SF Mono', Monaco, Menlo, 'Courier New', monospace; font-size: 12px; line-height: 1.7; color: #94a3b8;">
@@ -571,11 +570,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       const term = document.getElementById('log-terminal');
       if (term) term.innerHTML = '';
       lastLogCount = 0;
-    }
-
-    function addSampleLog() {
-      const now = new Date().toTimeString().split(' ')[0];
-      appendLogLine(now, "PING", "h1 -> h3 echo test passed (RTT: 10.2 ms)", "#38bdf8");
     }
 
     async function fetchLogs(flows, totalMbps) {
