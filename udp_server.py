@@ -46,6 +46,10 @@ def append_system_log(msg: str):
         ts = time.strftime("%H:%M:%S")
         with open(LOGS_FILE, "a") as f:
             f.write(f"[{ts}] {msg}\n")
+        try:
+            os.chmod(LOGS_FILE, 0o666)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -221,6 +225,10 @@ class UDPMultiServer:
                 }
                 with open("/tmp/qos_stats.json", "w") as f:
                     json.dump(payload, f)
+                try:
+                    os.chmod("/tmp/qos_stats.json", 0o666)
+                except Exception:
+                    pass
             except Exception as e:
                 pass
             

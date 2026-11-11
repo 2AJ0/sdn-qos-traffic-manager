@@ -37,10 +37,24 @@ def append_system_log(msg: str):
         pass
 
 
+CURRENT_EXPERIMENT_TIMER = None
+
+
 def start_qos_traffic(net, config="40"):
     """Starts UDP server on h3 and simultaneous clients on selected hosts with custom rates."""
+    global CURRENT_EXPERIMENT_TIMER
     import json
+    import threading
     h1, h2, h3, h4 = net.get('h1', 'h2', 'h3', 'h4')
+
+    # Cancel any existing timer
+    if CURRENT_EXPERIMENT_TIMER:
+        try:
+            CURRENT_EXPERIMENT_TIMER.cancel()
+        except Exception:
+            pass
+        CURRENT_EXPERIMENT_TIMER = None
+
     info("\n*** Stopping any existing traffic...\n")
     for h in [h1, h2, h3, h4]:
         h.cmd('pkill -9 -f udp_server.py')
@@ -54,53 +68,103 @@ def start_qos_traffic(net, config="40"):
 
     info("*** Starting low-level UDP Server on h3 (listening on 5001, 5002, 5003)...\n")
     h3.cmd('python3 udp_server.py &')
-    time.sleep(1.5)
+    time.sleep(1.2)
 
-    duration = "40"
+    dur = 40
     h1_cfg = {"enabled": True, "rate": 10}
     h2_cfg = {"enabled": True, "rate": 10}
     h4_cfg = {"enabled": True, "rate": 10}
 
     if isinstance(config, dict):
-        duration = str(config.get("duration", 40))
+        dur = int(config.get("duration", 40))
         h1_cfg = config.get("h1", h1_cfg)
         h2_cfg = config.get("h2", h2_cfg)
         h4_cfg = config.get("h4", h4_cfg)
-    elif isinstance(config, str) and config.strip().isdigit():
-        duration = config.strip()
+    elif isinstance(config, (str, int)) and str(config).strip().isdigit():
+        dur = int(str(config).strip())
 
-    info(f"*** Launching configured UDP senders (Duration: {duration}s)...\n")
+    info(f"*** Launching UDP senders for EXACTLY {dur} seconds...\n")
     active_hosts = []
 
     if h1_cfg.get("enabled", True):
         r1 = h1_cfg.get("rate", 10)
-        info(f"    • h1: High Priority   (VoIP)  -> {r1} Mbps target -> Queue 0 (6 Mbps)\n")
-        h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate {r1}M --time {duration} &')
+        info(f"    • h1: High Priority (VoIP)  -> {r1} Mbps target -> Queue 0 (6 Mbps)\n")
+        h1.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5001 --class-type high --rate {r1}M --time {dur} &')
         active_hosts.append(f"h1 ({r1}M)")
 
     if h2_cfg.get("enabled", True):
         r2 = h2_cfg.get("rate", 10)
-        info(f"    • h2: Medium Priority (Video) -> {r2} Mbps target -> Queue 1 (3 Mbps)\n")
-        h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate {r2}M --time {duration} &')
+        info(f"    • h2: Med Priority  (Video) -> {r2} Mbps target -> Queue 1 (3 Mbps)\n")
+        h2.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5002 --class-type medium --rate {r2}M --time {dur} &')
         active_hosts.append(f"h2 ({r2}M)")
 
     if h4_cfg.get("enabled", True):
         r4 = h4_cfg.get("rate", 10)
-        info(f"    • h4: Best Effort     (Bulk)  -> {r4} Mbps target -> Queue 2 (1 Mbps)\n")
-        h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate {r4}M --time {duration} &')
+        info(f"    • h4: Best Effort   (Bulk)  -> {r4} Mbps target -> Queue 2 (1 Mbps)\n")
+        h4.cmd(f'python3 udp_client.py --server 10.0.0.3 --port 5003 --class-type best_effort --rate {r4}M --time {dur} &')
         active_hosts.append(f"h4 ({r4}M)")
 
     hosts_str = ", ".join(active_hosts) if active_hosts else "None"
-    append_system_log(f"Mininet launched experiment: [{hosts_str}] for {duration}s")
+    append_system_log(f"Mininet launched experiment: [{hosts_str}] for {dur}s")
+
+    # Auto-stop timer to strictly end the experiment after duration
+    def _auto_stop_task():
+        info(f"\n[TIMER] Experiment duration ({dur}s) reached! Force-stopping traffic...\n")
+        stop_qos_traffic(net)
+        append_system_log(f"Experiment duration ({dur}s) expired. Traffic stopped.")
+
+    CURRENT_EXPERIMENT_TIMER = threading.Timer(dur + 0.5, _auto_stop_task)
+    CURRENT_EXPERIMENT_TIMER.daemon = True
+    CURRENT_EXPERIMENT_TIMER.start()
+
     info(f"*** Traffic started! Open http://localhost:8080 to watch the live QoS enforcement! ***\n\n")
 
 
 def stop_qos_traffic(net):
-    """Stops all running UDP clients and servers."""
+    """Stops all running UDP clients and servers, clearing telemetry."""
+    global CURRENT_EXPERIMENT_TIMER
+    import json
+    if CURRENT_EXPERIMENT_TIMER:
+        try:
+            CURRENT_EXPERIMENT_TIMER.cancel()
+        except Exception:
+            pass
+        CURRENT_EXPERIMENT_TIMER = None
+
     for h in net.get('h1', 'h2', 'h3', 'h4'):
-        h.cmd('pkill -9 -f udp_server.py')
-        h.cmd('pkill -9 -f udp_client.py')
-    append_system_log("Mininet stopped all running UDP traffic generators")
+        try:
+            h.cmd('pkill -9 -f udp_server.py')
+            h.cmd('pkill -9 -f udp_client.py')
+        except Exception:
+            pass
+
+    # Ensure no zombie processes on host level
+    try:
+        os.system("pkill -9 -f udp_client.py 2>/dev/null; pkill -9 -f udp_server.py 2>/dev/null")
+    except Exception:
+        pass
+
+    zero_stats = {
+        "timestamp": time.time(),
+        "total_mbps": 0.0,
+        "link_capacity_mbps": 10.0,
+        "flows": [
+            {"port": 5001, "class_name": "Host h1 (Queue 0)", "mbps": 0.0, "loss_pct": 0.0, "latency_ms": 0.0},
+            {"port": 5002, "class_name": "Host h2 (Queue 1)", "mbps": 0.0, "loss_pct": 0.0, "latency_ms": 0.0},
+            {"port": 5003, "class_name": "Host h4 (Queue 2)", "mbps": 0.0, "loss_pct": 0.0, "latency_ms": 0.0}
+        ]
+    }
+    try:
+        with open("/tmp/qos_stats.json", "w") as f:
+            json.dump(zero_stats, f)
+        try:
+            os.chmod("/tmp/qos_stats.json", 0o666)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    append_system_log("All UDP traffic generators and servers stopped.")
     info("*** All UDP traffic generators and servers stopped.\n")
 
 
@@ -194,7 +258,9 @@ def create_network():
 
     # ── Background listener for Dashboard 1-Click Start/Stop buttons ──────────
     import os
+    import json
     import threading
+    import urllib.request
 
     CMD_FILE = "/tmp/qos_cmd.txt"
     if os.path.exists(CMD_FILE):
@@ -205,31 +271,44 @@ def create_network():
 
     def _dashboard_cmd_poller():
         while True:
+            cmd = None
+            # 1. Primary channel: query Dashboard in-memory queue via HTTP
             try:
-                if os.path.exists(CMD_FILE):
-                    with open(CMD_FILE, "r") as f:
-                        cmd = f.read().strip()
-                    if cmd:
-                        try:
-                            os.remove(CMD_FILE)
-                        except Exception:
-                            pass
-                        if cmd == "START":
-                            info("\n[DASHBOARD TRIGGER] ▶ Start Traffic received from Web UI!\n")
-                            start_qos_traffic(net, "40")
-                        elif cmd.startswith("{"):
-                            import json
-                            try:
-                                cfg = json.loads(cmd)
-                                info("\n[DASHBOARD TRIGGER] ▶ Custom Experiment received from Web UI!\n")
-                                start_qos_traffic(net, cfg)
-                            except Exception as e:
-                                info(f"\n[DASHBOARD ERROR] Failed to parse custom config: {e}\n")
-                        elif cmd == "STOP":
-                            info("\n[DASHBOARD TRIGGER] ⏹ Stop Traffic received from Web UI!\n")
-                            stop_qos_traffic(net)
+                req = urllib.request.Request("http://127.0.0.1:8080/api/cmd/pending")
+                with urllib.request.urlopen(req, timeout=0.8) as resp:
+                    resp_data = json.loads(resp.read().decode('utf-8'))
+                    if resp_data and resp_data.get("cmd"):
+                        cmd = resp_data["cmd"]
             except Exception:
                 pass
+
+            # 2. Secondary fallback: check /tmp/qos_cmd.txt file
+            if not cmd and os.path.exists(CMD_FILE):
+                try:
+                    with open(CMD_FILE, "r") as f:
+                        cmd = f.read().strip()
+                    try:
+                        os.remove(CMD_FILE)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            if cmd:
+                if cmd == "START":
+                    info("\n[DASHBOARD TRIGGER] ▶ Start Traffic received from Web UI!\n")
+                    start_qos_traffic(net, "40")
+                elif cmd == "STOP":
+                    info("\n[DASHBOARD TRIGGER] ⏹ Stop Traffic received from Web UI!\n")
+                    stop_qos_traffic(net)
+                elif cmd.startswith("{"):
+                    try:
+                        cfg = json.loads(cmd)
+                        info(f"\n[DASHBOARD TRIGGER] 🚀 Custom Experiment received from Studio!\n")
+                        start_qos_traffic(net, cfg)
+                    except Exception as e:
+                        info(f"\n[DASHBOARD ERROR] Failed to parse custom config: {e}\n")
+
             time.sleep(0.5)
 
     poller_thread = threading.Thread(target=_dashboard_cmd_poller, daemon=True)
