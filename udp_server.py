@@ -210,13 +210,16 @@ class UDPMultiServer:
 
     def _stats_reporter(self):
         """Prints formatted metrics table to terminal every second and saves to JSON."""
+        import tempfile
+        STATS_PATH = "/tmp/qos_stats.json"
         time.sleep(1.0)
         while self.running:
             time.sleep(1.0)
             stats = [self.trackers[p].tick_window() for p in self.ports]
             total_mbps = sum(s["mbps"] for s in stats)
             
-            # Export to /tmp/qos_stats.json for the Web Dashboard
+            # Export to /tmp/qos_stats.json using atomic write (temp file + rename)
+            # This prevents the dashboard from reading a partial/corrupted file.
             try:
                 payload = {
                     "timestamp": time.time(),
@@ -224,13 +227,19 @@ class UDPMultiServer:
                     "link_capacity_mbps": 10.0,
                     "flows": stats
                 }
-                with open("/tmp/qos_stats.json", "w") as f:
-                    json.dump(payload, f)
+                # Write to a temp file in /tmp (same filesystem → rename is atomic)
+                fd, tmp_path = tempfile.mkstemp(dir="/tmp", suffix=".json")
                 try:
-                    os.chmod("/tmp/qos_stats.json", 0o666)
+                    with os.fdopen(fd, "w") as tf:
+                        json.dump(payload, tf)
+                    os.chmod(tmp_path, 0o666)
+                    os.replace(tmp_path, STATS_PATH)   # atomic on Linux
                 except Exception:
-                    pass
-            except Exception as e:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+            except Exception:
                 pass
             
             # Print tabular overview

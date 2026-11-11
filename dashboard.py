@@ -784,18 +784,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             data = {}
             if os.path.exists(STATS_FILE):
-                try:
-                    with open(STATS_FILE, "r") as f:
-                        data = json.load(f)
-                except Exception:
-                    data = {}
+                # Retry up to 3 times in case of a concurrent write (race window)
+                for _attempt in range(3):
+                    try:
+                        with open(STATS_FILE, "r") as f:
+                            raw = f.read()
+                        if raw.strip():
+                            data = json.loads(raw)
+                            break
+                    except Exception:
+                        time.sleep(0.05)
 
-            # Safety fallback: if the file is VERY stale (>10s), traffic has definitely stopped.
-            # We rely on stop_qos_traffic() writing explicit zeros for the normal stop path.
+            # Only declare data stale if we have a valid timestamp AND it's very old.
+            # If JSON parsing failed (data={}), timestamp defaults to 0 (epoch).
+            # Epoch 0 would appear billions of seconds stale — guard against that.
             file_time = data.get("timestamp", 0)
-            if time.time() - file_time > 10.0:
+            now = time.time()
+            is_stale = (file_time > 1_000_000) and (now - file_time > 10.0)
+            if not data or is_stale:
                 data = {
-                    "timestamp": time.time(),
+                    "timestamp": now,
                     "total_mbps": 0.0,
                     "link_capacity_mbps": 10.0,
                     "flows": [
@@ -819,6 +827,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 except Exception:
                     lines = []
             self.wfile.write(json.dumps({"logs": lines}).encode("utf-8"))
+
+        elif self.path == "/api/debug":
+            # Diagnostic endpoint — open http://localhost:8080/api/debug while traffic runs
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            debug = {"stats_file": STATS_FILE, "now": time.time()}
+            if os.path.exists(STATS_FILE):
+                stat_info = os.stat(STATS_FILE)
+                debug["file_mtime"] = stat_info.st_mtime
+                debug["file_size"] = stat_info.st_size
+                debug["file_age_sec"] = round(time.time() - stat_info.st_mtime, 2)
+                debug["file_mode_octal"] = oct(stat_info.st_mode)
+                try:
+                    with open(STATS_FILE, "r") as f:
+                        raw = f.read()
+                    debug["raw_content"] = raw[:800]
+                    debug["json_parse_ok"] = True
+                    parsed = json.loads(raw)
+                    debug["json_timestamp"] = parsed.get("timestamp", "MISSING")
+                    debug["json_total_mbps"] = parsed.get("total_mbps", "MISSING")
+                    debug["json_flows_count"] = len(parsed.get("flows", []))
+                except Exception as e:
+                    debug["json_parse_ok"] = False
+                    debug["json_error"] = str(e)
+            else:
+                debug["file_exists"] = False
+            self.wfile.write(json.dumps(debug, indent=2).encode("utf-8"))
 
         else:
             self.send_response(404)
