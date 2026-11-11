@@ -2,18 +2,19 @@
 """
 dashboard.py
 ============
-Interactive Web-Based User Interface & Real-Time QoS Visualizer.
+Clean, Lightweight & Minimalist Real-Time SDN QoS Web Dashboard.
 
-Provides an intuitive UI for:
-  - Explaining the SDN architecture and topology in viva / presentations.
-  - Visualizing live throughput, packet loss, and latency for each UDP traffic class.
-  - Demonstrating the dynamic policy swap (Phase 1 vs. Phase 2) in real time.
-  - Interactive Experiment Studio for controlling host rates and experiment duration.
-  - Zero-dependency: Built entirely on Python 3's standard library (http.server).
+Provides:
+  - Clean real-time telemetry (Throughput, Loss, Latency, Jain's Fairness Index).
+  - Live Chart.js visualization of OpenFlow 1.3 HTB queue enforcement.
+  - Automatic detection and visualization of Phase 1 -> Phase 2 dynamic policy swap.
+  - Interactive Experiment Studio with custom traffic presets and sliders.
+  - Monospace event terminal displaying SDN controller events.
+  - Zero Python dependencies (built entirely on standard library http.server).
 
 Usage:
   python3 dashboard.py [--port 8080]
-  Then open http://localhost:8080 in your web browser.
+  Open http://localhost:8080 in your browser.
 """
 
 import os
@@ -28,697 +29,709 @@ CMD_FILE = "/tmp/qos_cmd.txt"
 
 PENDING_COMMAND = None
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SDN QoS Traffic Management Dashboard</title>
+  <title>SDN QoS Traffic Management</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root {
-      --bg-color: #0f172a;
-      --card-bg: #1e293b;
-      --card-border: #334155;
-      --text-main: #f8fafc;
+      --bg: #090d16;
+      --surface: #111726;
+      --surface-sub: #172033;
+      --border: #1e293b;
+      --border-focus: #334155;
+      --text: #f1f5f9;
       --text-muted: #94a3b8;
-      --accent-high: #ef4444;    /* Red for High Priority */
-      --accent-med: #f59e0b;     /* Amber for Medium */
-      --accent-low: #3b82f6;     /* Blue for Best-Effort */
-      --accent-green: #10b981;
+      --text-dim: #64748b;
+      --accent-h1: #ef4444;
+      --accent-h2: #f59e0b;
+      --accent-h4: #3b82f6;
+      --emerald: #10b981;
+      --cyan: #06b6d4;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-    body { background-color: var(--bg-color); color: var(--text-main); padding: 24px; min-height: 100vh; }
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--card-border); padding-bottom: 16px; }
-    .title h1 { font-size: 24px; font-weight: 700; color: #38bdf8; }
-    .title p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
-    .badge { padding: 6px 14px; border-radius: 9999px; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
-    .badge-live { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #10b981; }
-    .pulse { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 1.5s infinite; }
-    @keyframes pulse { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 20px; min-height: 100vh; }
+    .container { max-width: 1400px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
 
-    /* Topology Canvas */
-    .section-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-    .section-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #cbd5e1; display: flex; justify-content: space-between; align-items: center; }
-    
-    .topo-diagram { display: flex; justify-content: space-between; align-items: center; padding: 20px 40px; background: #0b1120; border-radius: 8px; position: relative; }
-    .node-group { display: flex; flex-direction: column; gap: 16px; }
-    .node { padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 600; text-align: center; border: 1px solid transparent; min-width: 140px; }
-    .node-h1 { background: rgba(239, 68, 68, 0.15); border-color: var(--accent-high); color: #fca5a5; }
-    .node-h2 { background: rgba(245, 158, 11, 0.15); border-color: var(--accent-med); color: #fde68a; }
-    .node-h4 { background: rgba(59, 130, 246, 0.15); border-color: var(--accent-low); color: #bfdbfe; }
-    .node-sw { background: #334155; border-color: #64748b; color: #f1f5f9; min-width: 90px; }
-    .node-srv { background: rgba(16, 185, 129, 0.15); border-color: var(--accent-green); color: #a7f3d0; min-width: 140px; }
-    
-    .link-pipe { flex: 1; height: 12px; margin: 0 16px; background: #1e293b; border-radius: 6px; position: relative; overflow: hidden; border: 1px solid #475569; display: flex; align-items: center; justify-content: center; }
-    .pipe-label { font-size: 11px; font-weight: 700; color: #f8fafc; z-index: 2; text-shadow: 0 1px 2px rgba(0,0,0,0.8); }
-    .pipe-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #38bdf8, #ef4444); width: 0%; transition: width 0.5s; opacity: 0.7; }
+    /* Top Nav / Header */
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px 22px;
+    }
+    .brand h1 { font-size: 20px; font-weight: 700; color: #38bdf8; letter-spacing: -0.3px; }
+    .brand p { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+    .header-actions { display: flex; align-items: center; gap: 12px; }
 
-    /* Grid for Metrics */
-    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
-    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 20px; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 6px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600;
+      background: rgba(16, 185, 129, 0.12); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: pulse 1.6s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 
-    /* Table */
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
-    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--card-border); }
-    th { color: var(--text-muted); font-weight: 600; }
-    
-    .phase-banner { padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; background: #1e293b; border-left: 4px solid #38bdf8; }
-    .btn { background: #38bdf8; color: #0f172a; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; font-size: 12px; }
-    .btn:hover { background: #0ea5e9; }
+    .btn {
+      cursor: pointer; border: none; border-radius: 8px; font-size: 12px; font-weight: 600;
+      padding: 8px 16px; transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-start { background: var(--emerald); color: #042f1a; }
+    .btn-start:hover { background: #059669; color: #fff; }
+    .btn-stop { background: #dc2626; color: #fff; }
+    .btn-stop:hover { background: #b91c1c; }
+    .btn-secondary { background: var(--surface-sub); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: #1e293b; border-color: var(--border-focus); }
+
+    /* KPI Cards */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .kpi-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+      display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .kpi-title { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .kpi-val { font-size: 24px; font-weight: 700; margin: 8px 0 4px; color: var(--text); }
+    .kpi-sub { font-size: 12px; color: var(--text-dim); }
+
+    .progress-track { height: 6px; background: var(--surface-sub); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+    .progress-bar { height: 100%; width: 0%; background: linear-gradient(90deg, #38bdf8, #ef4444); transition: width 0.4s ease; }
+
+    /* Policy Banner */
+    .policy-banner {
+      background: var(--surface); border: 1px solid var(--border); border-left: 4px solid #38bdf8;
+      border-radius: 10px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between;
+      transition: all 0.3s ease;
+    }
+    .policy-info { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+    .policy-title { font-weight: 700; color: #38bdf8; }
+    .policy-desc { font-weight: 500; color: var(--text); }
+    .policy-badge {
+      font-size: 11px; padding: 4px 10px; border-radius: 6px; font-weight: 600;
+      background: var(--surface-sub); color: var(--text-muted); border: 1px solid var(--border);
+    }
+
+    /* Main 2-Column Grid */
+    .main-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; }
+    @media (max-width: 1024px) { .main-grid { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .card-header { display: flex; justify-content: space-between; align-items: center; }
+    .card-title { font-size: 14px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+
+    /* Telemetry Table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 10px; color: var(--text-muted); font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+    td { padding: 11px 10px; border-bottom: 1px solid rgba(30, 41, 59, 0.5); }
+    tr:last-child td { border-bottom: none; }
+    .tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .tag-h1 { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    .tag-h2 { background: rgba(245, 158, 11, 0.15); color: #fde68a; }
+    .tag-h4 { background: rgba(59, 130, 246, 0.15); color: #bfdbfe; }
+
+    /* Minimal Topology Map */
+    .topo-row {
+      display: flex; align-items: center; justify-content: space-between; background: #0b101c;
+      border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px;
+    }
+    .topo-hosts { display: flex; flex-direction: column; gap: 6px; }
+    .topo-node { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 6px; text-align: center; }
+    .topo-link { flex: 1; margin: 0 14px; text-align: center; }
+    .topo-link-pipe { height: 8px; background: var(--surface-sub); border-radius: 4px; overflow: hidden; position: relative; margin-top: 4px; }
+    .topo-link-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #38bdf8, #ef4444); transition: width 0.4s ease; }
+
+    /* Studio Controls */
+    .preset-group { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .btn-preset { font-size: 11px; padding: 5px 10px; background: var(--surface-sub); color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; }
+    .btn-preset:hover { background: #1e293b; color: var(--text); border-color: var(--border-focus); }
+    .slider-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 12px; }
+    .slider-row label { flex: 1; color: var(--text-muted); }
+    .slider-row input[type="range"] { flex: 1.5; accent-color: #38bdf8; height: 5px; }
+    .slider-val { width: 50px; text-align: right; font-weight: 600; color: #38bdf8; }
+
+    /* Logs Terminal */
+    .log-box {
+      background: #060a12; border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; font-family: "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 11px; height: 210px; overflow-y: auto; line-height: 1.6;
+    }
+    .log-line { color: #94a3b8; word-break: break-all; }
+    .log-ts { color: #475569; margin-right: 6px; }
+    .log-dyn { color: #f59e0b; font-weight: 600; }
+    .log-ovs { color: #38bdf8; }
+    .log-soc { color: #34d399; }
   </style>
 </head>
 <body>
 
-  <div class="header">
-    <div class="title">
-      <h1>QoS Traffic Management Visualizer</h1>
-      <p>Low-Level UDP Socket & OpenFlow 1.3 SDN Dynamic Prioritization System</p>
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <h1>SDN QoS Traffic Manager</h1>
+      <p>OpenFlow 1.3 & Mininet Linux HTB Queue Telemetry</p>
     </div>
-    <div style="display: flex; gap: 10px; align-items: center;">
-      <button id="btn-start" class="btn" style="background: #10b981; color: #fff; font-weight: 700; padding: 8px 16px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="triggerStartTraffic()">
-        <span>▶</span> Start Traffic (40s)
-      </button>
-      <button id="btn-stop" class="btn" style="background: #ef4444; color: #fff; font-weight: 700; padding: 8px 16px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="triggerStopTraffic()">
-        <span>⏹</span> Stop Traffic
-      </button>
-      <span class="badge badge-live"><span class="pulse"></span> Live Mininet Network</span>
+    <div class="header-actions">
+      <span class="status-pill"><span class="pulse-dot"></span> Live Network</span>
+      <button id="btn-start" class="btn btn-start" onclick="startTraffic()">▶ Start Traffic (40s)</button>
+      <button id="btn-stop" class="btn btn-stop" onclick="stopTraffic()">⏹ Stop</button>
+    </div>
+  </header>
+
+  <!-- KPI Row -->
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-title">Bottleneck Utilization</div>
+      <div class="kpi-val"><span id="val-total-rate">0.00</span> <span style="font-size: 14px; color: var(--text-dim);">/ 10.00 Mbps</span></div>
+      <div class="progress-track"><div id="bar-total-load" class="progress-bar"></div></div>
+      <div class="kpi-sub" style="margin-top: 6px;"><span id="val-load-pct">0%</span> of 10 Mbps capacity</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-title">Jain's Fairness Index</div>
+      <div class="kpi-val" id="val-jain">1.000</div>
+      <div class="kpi-sub" id="sub-jain">Idle / No Contention</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-title">Active UDP Flows</div>
+      <div class="kpi-val" id="val-active-flows">0 <span style="font-size: 14px; color: var(--text-dim);">/ 3</span></div>
+      <div class="kpi-sub">h1 (5001), h2 (5002), h4 (5003)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-title">SDN Policy Status</div>
+      <div class="kpi-val" id="val-phase-title" style="font-size: 18px; color: #38bdf8;">Phase 1</div>
+      <div class="kpi-sub" id="val-phase-sub">h1 High (6M) | h4 Low (1M)</div>
     </div>
   </div>
 
-  <!-- Phase Indicator -->
-  <div class="phase-banner">
-    <div>
-      <span style="font-weight: 700; color: #38bdf8;">ACTIVE SDN POLICY: </span>
-      <span id="policy-label" style="font-weight: 600;">Phase 1 — Initial Priority (h1 High: 6 Mbps, h2 Med: 3 Mbps, h4 Low: 1 Mbps)</span>
+  <!-- Active Policy Banner -->
+  <div class="policy-banner" id="policy-banner">
+    <div class="policy-info">
+      <span class="policy-title">POLICY ENFORCEMENT:</span>
+      <span class="policy-desc" id="policy-text">Phase 1 — Initial Priority (h1: 6 Mbps, h2: 3 Mbps, h4: 1 Mbps)</span>
+    </div>
+    <span class="policy-badge" id="policy-timer-badge">Swap fires at t=20s</span>
+  </div>
+
+  <!-- Topology Row -->
+  <div class="topo-row">
+    <div class="topo-hosts">
+      <div class="topo-node tag-h1" id="topo-h1">h1: High (6M)</div>
+      <div class="topo-node tag-h2" id="topo-h2">h2: Med (3M)</div>
+      <div class="topo-node tag-h4" id="topo-h4">h4: Bulk (1M)</div>
+    </div>
+    <div style="font-size: 12px; font-weight: 700; color: var(--text-dim); margin: 0 8px;">➔ [ Switch s1 ]</div>
+    <div class="topo-link">
+      <div style="font-size: 11px; color: var(--text-muted); font-weight: 600;">Bottleneck Egress Link (s1-eth4 ➔ s2)</div>
+      <div class="topo-link-pipe"><div id="topo-pipe-fill" class="topo-link-fill"></div></div>
+      <div style="font-size: 10px; color: var(--text-dim); margin-top: 2px;" id="topo-link-text">0.00 Mbps (0% Load)</div>
+    </div>
+    <div style="font-size: 12px; font-weight: 700; color: var(--text-dim); margin: 0 8px;">➔ [ Switch s2 ] ➔</div>
+    <div class="topo-node" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3);">
+      h3: UDP Sink
     </div>
   </div>
 
-  <!-- Interactive Experiment Studio (Live Parameters Control) -->
-  <div class="section-card" style="border-color: #3b82f6;">
-    <div class="section-title">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 18px;">🎛️</span>
-        <span style="font-weight: 700; color: #38bdf8;">Interactive Experiment Studio</span>
+  <!-- Main 2-Column Grid -->
+  <div class="main-grid">
+    
+    <!-- Left: Throughput Chart & Telemetry Table -->
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+      
+      <!-- Chart -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Real-Time Throughput (Mbps)</span>
+          <span style="font-size: 11px; color: var(--text-dim);">OpenFlow 1.3 HTB Egress Monitoring</span>
+        </div>
+        <div style="position: relative; height: 260px; width: 100%;">
+          <canvas id="throughputChart"></canvas>
+        </div>
       </div>
-      <button class="btn" onclick="toggleStudioCollapse()" style="background: #1e293b; color: #94a3b8; border: 1px solid #334155;">Toggle Studio</button>
+
+      <!-- Table -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Live Flow Telemetry</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Receiver metrics on h3 (10.0.0.3)</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Traffic Class / Host</th>
+              <th>Port</th>
+              <th>Throughput</th>
+              <th>Packet Loss</th>
+              <th>Latency (RTT)</th>
+              <th>OVS Queue</th>
+            </tr>
+          </thead>
+          <tbody id="telemetry-tbody">
+            <tr>
+              <td><span class="tag tag-h1">Host h1 (VoIP)</span></td>
+              <td>5001</td>
+              <td id="t-h1-rate">0.00 Mbps</td>
+              <td id="t-h1-loss">0.0%</td>
+              <td id="t-h1-lat">0.0 ms</td>
+              <td id="t-h1-q">Queue 0 (6M)</td>
+            </tr>
+            <tr>
+              <td><span class="tag tag-h2">Host h2 (Video)</span></td>
+              <td>5002</td>
+              <td id="t-h2-rate">0.00 Mbps</td>
+              <td id="t-h2-loss">0.0%</td>
+              <td id="t-h2-lat">0.0 ms</td>
+              <td>Queue 1 (3M)</td>
+            </tr>
+            <tr>
+              <td><span class="tag tag-h4">Host h4 (Bulk)</span></td>
+              <td>5003</td>
+              <td id="t-h4-rate">0.00 Mbps</td>
+              <td id="t-h4-loss">0.0%</td>
+              <td id="t-h4-lat">0.0 ms</td>
+              <td id="t-h4-q">Queue 2 (1M)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
     </div>
 
-    <div id="studio-body">
-      <!-- Quick Viva Presets -->
-      <div style="margin-bottom: 16px;">
-        <span style="font-size: 12px; font-weight: 600; color: #94a3b8; margin-right: 10px;">Quick Presets:</span>
-        <div style="display: inline-flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('benchmark')">Standard Benchmark (10M each)</button>
-          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('overload')">Severe Overload (15M each = 45M load)</button>
-          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('two_flow')">2-Flow Contention (h1 & h2 only)</button>
-          <button class="btn" style="background: #334155; color: #f8fafc; font-size: 11px;" onclick="setPreset('single')">Single Flow Baseline (h1 only)</button>
+    <!-- Right: Studio & Controller Logs -->
+    <div style="display: flex; flex-direction: column; gap: 18px;">
+      
+      <!-- Interactive Studio -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Interactive Experiment Studio</span>
+          <span style="font-size: 11px; color: var(--text-dim);">Live Parameters</span>
         </div>
-      </div>
-
-      <!-- Controls Grid -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 16px; background: #0b1120; padding: 16px; border-radius: 8px;">
-        <!-- Host h1 -->
-        <div style="border-left: 3px solid #ef4444; padding-left: 12px;">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <label style="font-size: 13px; font-weight: 700; color: #fca5a5; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-              <input type="checkbox" id="cfg-h1-enable" checked> Host h1 (High / VoIP)
-            </label>
-            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h1-rate-val">10 Mbps</span>
-          </div>
-          <input type="range" id="cfg-h1-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h1')">
+        
+        <div class="preset-group">
+          <button class="btn-preset" onclick="setPreset('benchmark')">Standard (10M each)</button>
+          <button class="btn-preset" onclick="setPreset('overload')">Severe Overload (15M each)</button>
+          <button class="btn-preset" onclick="setPreset('two_flow')">2-Flow Contention (h1 & h2)</button>
+          <button class="btn-preset" onclick="setPreset('single')">Single Baseline (h1 only)</button>
         </div>
 
-        <!-- Host h2 -->
-        <div style="border-left: 3px solid #f59e0b; padding-left: 12px;">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <label style="font-size: 13px; font-weight: 700; color: #fde68a; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-              <input type="checkbox" id="cfg-h2-enable" checked> Host h2 (Med / Video)
-            </label>
-            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h2-rate-val">10 Mbps</span>
-          </div>
-          <input type="range" id="cfg-h2-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h2')">
+        <div class="slider-row">
+          <label><input type="checkbox" id="chk-h1" checked> h1 Target Rate:</label>
+          <input type="range" id="rate-h1" min="1" max="20" value="10" oninput="updateSliderLabels()">
+          <span class="slider-val" id="val-rate-h1">10M</span>
+        </div>
+        <div class="slider-row">
+          <label><input type="checkbox" id="chk-h2" checked> h2 Target Rate:</label>
+          <input type="range" id="rate-h2" min="1" max="20" value="10" oninput="updateSliderLabels()">
+          <span class="slider-val" id="val-rate-h2">10M</span>
+        </div>
+        <div class="slider-row">
+          <label><input type="checkbox" id="chk-h4" checked> h4 Target Rate:</label>
+          <input type="range" id="rate-h4" min="1" max="20" value="10" oninput="updateSliderLabels()">
+          <span class="slider-val" id="val-rate-h4">10M</span>
+        </div>
+        <div class="slider-row" style="margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px;">
+          <label>Experiment Duration:</label>
+          <input type="range" id="exp-dur" min="10" max="90" step="5" value="40" oninput="updateSliderLabels()">
+          <span class="slider-val" id="val-exp-dur">40s</span>
         </div>
 
-        <!-- Host h4 -->
-        <div style="border-left: 3px solid #3b82f6; padding-left: 12px;">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <label style="font-size: 13px; font-weight: 700; color: #bfdbfe; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-              <input type="checkbox" id="cfg-h4-enable" checked> Host h4 (Low / Bulk)
-            </label>
-            <span style="font-size: 12px; color: #38bdf8; font-weight: 700;" id="cfg-h4-rate-val">10 Mbps</span>
-          </div>
-          <input type="range" id="cfg-h4-rate" min="1" max="20" value="10" step="1" style="width: 100%; cursor: pointer;" oninput="updateRateLabel('h4')">
-        </div>
-
-        <!-- Duration -->
-        <div style="border-left: 3px solid #10b981; padding-left: 12px;">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <label style="font-size: 13px; font-weight: 700; color: #a7f3d0;">Duration (Seconds)</label>
-            <span style="font-size: 12px; color: #34d399; font-weight: 700;" id="cfg-dur-val">40 s</span>
-          </div>
-          <input type="range" id="cfg-dur" min="10" max="60" value="40" step="5" style="width: 100%; cursor: pointer;" oninput="updateDurLabel()">
-        </div>
-      </div>
-
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-        <span style="font-size: 12px; color: #94a3b8;">Bottleneck capacity is strictly 10 Mbps. Aggregate load tests OVS HTB queue priority behavior.</span>
-        <button id="btn-custom-launch" class="btn" style="background: linear-gradient(90deg, #38bdf8, #2563eb); color: #fff; font-weight: 700; padding: 10px 24px; font-size: 13px; display: inline-flex; align-items: center; gap: 6px;" onclick="launchCustomExperiment()">
-          <span>🚀</span> Launch Custom Experiment
+        <button class="btn btn-secondary" style="margin-top: 8px; justify-content: center; background: #1e293b; color: #38bdf8; border-color: #38bdf8;" onclick="launchCustomExperiment()">
+          🚀 Launch Custom Experiment
         </button>
       </div>
-    </div>
-  </div>
 
-  <!-- Network Topology View -->
-  <div class="section-card">
-    <div class="section-title">
-      <span>Physical / Logical SDN Mininet Topology</span>
-      <span style="font-size: 12px; color: #38bdf8;">OVS HTB Queues Enforced on Switch s1</span>
-    </div>
-    <div class="topo-diagram">
-      <div class="node-group">
-        <div class="node node-h1" id="box-h1">
-          <div>Host h1 (10.0.0.1)</div>
-          <div style="font-size: 11px; opacity: 0.8;" id="desc-h1">VoIP / High [6 Mbps]</div>
+      <!-- Logs -->
+      <div class="card" style="flex: 1;">
+        <div class="card-header">
+          <span class="card-title">SDN Controller & Event Logs</span>
+          <button class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px;" onclick="clearLogs()">Clear</button>
         </div>
-        <div class="node node-h2" id="box-h2">
-          <div>Host h2 (10.0.0.2)</div>
-          <div style="font-size: 11px; opacity: 0.8;">Video / Medium [3 Mbps]</div>
-        </div>
-        <div class="node node-h4" id="box-h4">
-          <div>Host h4 (10.0.0.4)</div>
-          <div style="font-size: 11px; opacity: 0.8;" id="desc-h4">Bulk / Low [1 Mbps]</div>
+        <div class="log-box" id="log-box">
+          <div class="log-line" style="color: #64748b;">Ready. Start traffic to stream controller events.</div>
         </div>
       </div>
 
-      <div style="font-size: 20px; color: #64748b;">➔</div>
-
-      <div class="node node-sw">
-        <div>Switch s1</div>
-        <div style="font-size: 10px; color: #94a3b8;">(OpenFlow 1.3)</div>
-      </div>
-
-      <div class="link-pipe">
-        <div class="pipe-fill" id="pipe-bar"></div>
-        <div class="pipe-label" id="pipe-text">Bottleneck Link (s1 ↔ s2): 0.00 Mbps (Idle)</div>
-      </div>
-
-      <div class="node node-sw">
-        <div>Switch s2</div>
-        <div style="font-size: 10px; color: #94a3b8;">(Egress)</div>
-      </div>
-
-      <div style="font-size: 20px; color: #64748b;">➔</div>
-
-      <div class="node node-srv">
-        <div>Host h3 (10.0.0.3)</div>
-        <div style="font-size: 11px; opacity: 0.8;">UDP Server (Sink)</div>
-      </div>
     </div>
+
   </div>
 
-  <!-- Charts & Stats Grid -->
-  <div class="metrics-grid">
-    <!-- Live Flow Table -->
-    <div class="card">
-      <div class="section-title">Live Flow Telemetry</div>
-      <table>
-        <thead>
-          <tr>
-            <th>Class / Host</th>
-            <th>Port</th>
-            <th>Throughput</th>
-            <th>Loss %</th>
-            <th>Latency</th>
-          </tr>
-        </thead>
-        <tbody id="telemetry-body">
-          <!-- Populated by JS -->
-        </tbody>
-      </table>
-      <div style="margin-top: 16px; padding: 12px; background: #0b1120; border-radius: 6px; font-size: 12px;">
-        <span style="color: #38bdf8; font-weight: 600;">Jain's Fairness Index:</span>
-        <span id="jain-val" style="font-weight: 700; color: #94a3b8;">1.000 (Idle / No Contention)</span>
-      </div>
-    </div>
+</div>
 
-    <!-- Live Real-Time Throughput Chart -->
-    <div class="card">
-      <div class="section-title">Real-Time Throughput (Mbps)</div>
-      <div style="position: relative; height: 220px;">
-        <canvas id="chartThroughput"></canvas>
-      </div>
-    </div>
-  </div>
+<script>
+  // Chart initialization
+  const ctx = document.getElementById('throughputChart').getContext('2d');
+  const MAX_POINTS = 30;
+  const labels = Array.from({length: MAX_POINTS}, (_, i) => `${i - MAX_POINTS + 1}s`);
 
-  <!-- Real-Time System & Controller Logs Console -->
-  <div class="section-card" style="margin-top: 24px;">
-    <div class="section-title">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <div style="display: flex; gap: 6px;">
-          <span style="width: 10px; height: 10px; border-radius: 50%; background: #ef4444; display: inline-block;"></span>
-          <span style="width: 10px; height: 10px; border-radius: 50%; background: #f59e0b; display: inline-block;"></span>
-          <span style="width: 10px; height: 10px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
-        </div>
-        <span style="font-weight: 700;">Live SDN Controller & QoS Event Telemetry</span>
-        <span class="badge" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid #38bdf8; font-size: 11px; padding: 2px 8px;">Streaming</span>
-      </div>
-      <div style="display: flex; gap: 8px;">
-        <button class="btn" onclick="clearLogs()" style="padding: 4px 10px; font-size: 11px; background: #334155; color: #cbd5e1;">Clear Logs</button>
-      </div>
-    </div>
-    <div id="log-terminal" style="background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 14px; height: 210px; overflow-y: auto; font-family: 'SF Mono', Monaco, Menlo, 'Courier New', monospace; font-size: 12px; line-height: 1.7; color: #94a3b8;">
-      <!-- Log lines dynamically stream here -->
-    </div>
-  </div>
-
-  <script>
-    let currentPhase = 1; // 1 or 2
-    let step = 0;
-    let experimentStartTime = null;   // Unix ms when Start was last clicked
-    let swapCountdownInterval = null; // interval handle for the t=20s countdown
-
-    // Chart.js Setup: Starts clean at 0.00 Mbps
-    const ctx = document.getElementById('chartThroughput').getContext('2d');
-    const chart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: Array(20).fill(''),
-        datasets: [
-          { label: 'h1 High (VoIP)', data: Array(20).fill(0), borderColor: '#ef4444', backgroundColor: '#ef4444', tension: 0.3 },
-          { label: 'h2 Med (Video)', data: Array(20).fill(0), borderColor: '#f59e0b', backgroundColor: '#f59e0b', tension: 0.3 },
-          { label: 'h4 Low (Bulk)', data: Array(20).fill(0), borderColor: '#3b82f6', backgroundColor: '#3b82f6', tension: 0.3 }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          y: { min: 0, max: 8, grid: { color: '#334155' } },
-          x: { grid: { display: false } }
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        {
+          label: 'h1 High (VoIP)',
+          data: new Array(MAX_POINTS).fill(0),
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239, 68, 68, 0.1)',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true
         },
-        plugins: {
-          legend: { labels: { color: '#cbd5e1', font: { size: 11 } } }
+        {
+          label: 'h2 Med (Video)',
+          data: new Array(MAX_POINTS).fill(0),
+          borderColor: '#f59e0b',
+          backgroundColor: 'rgba(245, 158, 11, 0.08)',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true
+        },
+        {
+          label: 'h4 Low (Bulk)',
+          data: new Array(MAX_POINTS).fill(0),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.08)',
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 2,
+          pointHoverRadius: 4,
+          fill: true
         }
-      }
-    });
-
-    function togglePhase() {
-      currentPhase = (currentPhase === 1) ? 2 : 1;
-      updatePhaseUI();
-    }
-
-    function updatePhaseUI() {
-      const pLabel = document.getElementById('policy-label');
-      const descH1 = document.getElementById('desc-h1');
-      const descH4 = document.getElementById('desc-h4');
-      if (currentPhase === 1) {
-        pLabel.innerText = "Phase 1 — Initial Priority (h1 High: 6 Mbps, h2 Med: 3 Mbps, h4 Low: 1 Mbps)";
-        descH1.innerText = "VoIP / High [6 Mbps]";
-        descH4.innerText = "Bulk / Low [1 Mbps]";
-      } else {
-        pLabel.innerText = "Phase 2 — Dynamic Policy Swapped! (h1 Demoted: 1 Mbps, h4 Promoted: 6 Mbps)";
-        descH1.innerText = "Demoted / Low [1 Mbps]";
-        descH4.innerText = "Promoted / High [6 Mbps]";
-      }
-    }
-
-    async function fetchStats() {
-      step++;
-      let flows = [];
-      let totalMbps = 0.0;
-
-      try {
-        const res = await fetch('/api/stats');
-        const data = await res.json();
-        if (data && data.flows && Array.isArray(data.flows)) {
-          flows = data.flows;
-          totalMbps = data.total_mbps || 0.0;
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: '#94a3b8', font: { size: 11, weight: '600' }, boxWidth: 10, usePointStyle: true }
+        },
+        tooltip: {
+          backgroundColor: '#0f172a',
+          borderColor: '#334155',
+          borderWidth: 1,
+          titleFont: { size: 11 },
+          bodyFont: { size: 11 }
         }
-      } catch (e) {}
-
-      // If no live flows from Mininet or experiment stopped
-      if (!flows || flows.length === 0) {
-        flows = [
-          { class_name: "Host h1 (VoIP / Queue 0)", port: 5001, mbps: 0.0, loss_pct: 0.0, latency_ms: 0.0 },
-          { class_name: "Host h2 (Video / Queue 1)", port: 5002, mbps: 0.0, loss_pct: 0.0, latency_ms: 0.0 },
-          { class_name: "Host h4 (Bulk / Queue 2)", port: 5003, mbps: 0.0, loss_pct: 0.0, latency_ms: 0.0 }
-        ];
-        totalMbps = 0.0;
-      }
-
-      // Auto-detect phase from live rates when active
-      if (totalMbps > 0.5) {
-        const h1Flow = flows.find(f => f.port === 5001);
-        const h4Flow = flows.find(f => f.port === 5003);
-        if (h1Flow && h4Flow) {
-          if (h4Flow.mbps > 4.0 && h1Flow.mbps < 2.5) {
-            currentPhase = 2;
-            updatePhaseUI();
-            h1Flow.class_name = "Host h1 [Demoted to 1 Mbps]";
-            h4Flow.class_name = "Host h4 [Promoted to 6 Mbps]";
-          } else if (h1Flow.mbps > 4.0) {
-            currentPhase = 1;
-            updatePhaseUI();
-            h1Flow.class_name = "Host h1 [High Priority - 6 Mbps]";
-            h4Flow.class_name = "Host h4 [Best Effort - 1 Mbps]";
+      },
+      scales: {
+        x: {
+          grid: { color: '#172033' },
+          ticks: { color: '#64748b', font: { size: 10 }, maxTicksLimit: 10 }
+        },
+        y: {
+          min: 0,
+          max: 9,
+          grid: { color: '#172033' },
+          ticks: {
+            color: '#64748b',
+            font: { size: 10 },
+            stepSize: 1,
+            callback: v => v + ' M'
           }
         }
       }
+    }
+  });
 
-      // Render table
-      const tbody = document.getElementById('telemetry-body');
-      tbody.innerHTML = flows.map(f => `
-        <tr>
-          <td style="font-weight: 600;">${f.class_name}</td>
-          <td>${f.port}</td>
-          <td style="color: ${f.mbps > 0.05 ? '#38bdf8' : '#94a3b8'}; font-weight: 700;">${f.mbps.toFixed(2)} Mbps</td>
-          <td style="color: ${f.loss_pct > 2 ? '#ef4444' : (f.mbps > 0.05 ? '#10b981' : '#94a3b8')}; font-weight: 600;">${f.loss_pct.toFixed(1)}%</td>
-          <td style="color: ${f.mbps > 0.05 ? '#f8fafc' : '#94a3b8'};">${f.latency_ms.toFixed(1)} ms</td>
-        </tr>
-      `).join('');
+  let currentPhase = 1;
+  let swapCountdownTimer = null;
 
-      // Update Chart strictly with real values
-      const h1Val = flows.find(f => f.port === 5001)?.mbps || 0.0;
-      const h2Val = flows.find(f => f.port === 5002)?.mbps || 0.0;
-      const h4Val = flows.find(f => f.port === 5003)?.mbps || 0.0;
+  function updateSliderLabels() {
+    document.getElementById('val-rate-h1').innerText = document.getElementById('rate-h1').value + 'M';
+    document.getElementById('val-rate-h2').innerText = document.getElementById('rate-h2').value + 'M';
+    document.getElementById('val-rate-h4').innerText = document.getElementById('rate-h4').value + 'M';
+    document.getElementById('val-exp-dur').innerText = document.getElementById('exp-dur').value + 's';
+  }
 
-      chart.data.datasets[0].data.shift();
-      chart.data.datasets[0].data.push(h1Val);
+  function setPreset(name) {
+    const h1 = document.getElementById('rate-h1');
+    const h2 = document.getElementById('rate-h2');
+    const h4 = document.getElementById('rate-h4');
+    const chk1 = document.getElementById('chk-h1');
+    const chk2 = document.getElementById('chk-h2');
+    const chk4 = document.getElementById('chk-h4');
+    const dur = document.getElementById('exp-dur');
 
-      chart.data.datasets[1].data.shift();
-      chart.data.datasets[1].data.push(h2Val);
+    chk1.checked = chk2.checked = chk4.checked = true;
+    dur.value = 40;
 
-      chart.data.datasets[2].data.shift();
-      chart.data.datasets[2].data.push(h4Val);
-      chart.update();
+    if (name === 'benchmark') {
+      h1.value = 10; h2.value = 10; h4.value = 10;
+    } else if (name === 'overload') {
+      h1.value = 15; h2.value = 15; h4.value = 15;
+    } else if (name === 'two_flow') {
+      h1.value = 10; h2.value = 10; h4.value = 10;
+      chk4.checked = false;
+    } else if (name === 'single') {
+      h1.value = 10; h2.value = 10; h4.value = 10;
+      chk2.checked = false; chk4.checked = false;
+    }
+    updateSliderLabels();
+  }
 
-      // Update Link Pipe
-      const pct = Math.min(100, (totalMbps / 10.0) * 100);
-      document.getElementById('pipe-bar').style.width = pct + '%';
-      if (totalMbps > 0.1) {
-        document.getElementById('pipe-text').innerText = `Bottleneck (10 Mbps Cap): ${totalMbps.toFixed(2)} Mbps (${pct.toFixed(0)}% Load)`;
-        document.getElementById('jain-val').innerText = "0.985 (Optimal Weighted Fairness)";
-        document.getElementById('jain-val').style.color = "#10b981";
+  function setPhaseUI(phase) {
+    currentPhase = phase;
+    const banner = document.getElementById('policy-banner');
+    const pText = document.getElementById('policy-text');
+    const pBadge = document.getElementById('policy-timer-badge');
+    const title = document.getElementById('val-phase-title');
+    const sub = document.getElementById('val-phase-sub');
+    const topoH1 = document.getElementById('topo-h1');
+    const topoH4 = document.getElementById('topo-h4');
+    const tH1Q = document.getElementById('t-h1-q');
+    const tH4Q = document.getElementById('t-h4-q');
+
+    if (phase === 1) {
+      banner.style.borderLeftColor = '#38bdf8';
+      banner.style.background = 'var(--surface)';
+      pText.innerText = "Phase 1 — Initial Priority (h1: 6 Mbps, h2: 3 Mbps, h4: 1 Mbps)";
+      pBadge.innerText = "Swap fires at t=20s";
+      title.innerText = "Phase 1";
+      title.style.color = "#38bdf8";
+      sub.innerText = "h1 High (6M) | h4 Low (1M)";
+      topoH1.innerText = "h1: High (6M)";
+      topoH4.innerText = "h4: Bulk (1M)";
+      tH1Q.innerText = "Queue 0 (6M)";
+      tH4Q.innerText = "Queue 2 (1M)";
+    } else {
+      banner.style.borderLeftColor = '#f59e0b';
+      banner.style.background = 'rgba(245, 158, 11, 0.08)';
+      pText.innerText = "Phase 2 — Dynamic Policy Swapped! (h1 Demoted: 1 Mbps, h4 Promoted: 6 Mbps)";
+      pBadge.innerText = "Active Phase 2";
+      title.innerText = "Phase 2 (Swapped)";
+      title.style.color = "#f59e0b";
+      sub.innerText = "h4 Promoted (6M) | h1 Demoted (1M)";
+      topoH1.innerText = "h1: Demoted (1M)";
+      topoH4.innerText = "h4: Promoted (6M)";
+      tH1Q.innerText = "Queue 0 (1M) [Demoted]";
+      tH4Q.innerText = "Queue 2 (6M) [Promoted]";
+    }
+  }
+
+  function startSwapCountdown(swapSec = 20) {
+    if (swapCountdownTimer) clearInterval(swapCountdownTimer);
+    let remaining = swapSec;
+    const badge = document.getElementById('policy-timer-badge');
+    setPhaseUI(1);
+    badge.innerText = `Dynamic swap in ${remaining}s...`;
+
+    swapCountdownTimer = setInterval(() => {
+      remaining--;
+      if (remaining > 0) {
+        badge.innerText = `Dynamic swap in ${remaining}s...`;
       } else {
-        document.getElementById('pipe-text').innerText = `Bottleneck Link (s1 ↔ s2): 0.00 Mbps (Idle - 0% Load)`;
-        document.getElementById('jain-val').innerText = "1.000 (Idle / No Contention)";
-        document.getElementById('jain-val').style.color = "#94a3b8";
+        clearInterval(swapCountdownTimer);
+        setPhaseUI(2);
       }
+    }, 1000);
+  }
 
-      // Stream Logs
-      fetchLogs(flows, totalMbps);
-    }
+  function resetStatsVisuals() {
+    chart.data.datasets.forEach(ds => ds.data.fill(0));
+    chart.update();
 
-    let lastLogCount = 0;
-    let prevPhase = 1;
+    document.getElementById('val-total-rate').innerText = "0.00";
+    document.getElementById('val-load-pct').innerText = "0%";
+    document.getElementById('bar-total-load').style.width = "0%";
+    document.getElementById('topo-pipe-fill').style.width = "0%";
+    document.getElementById('topo-link-text').innerText = "0.00 Mbps (0% Load)";
+    document.getElementById('val-jain').innerText = "1.000";
+    document.getElementById('sub-jain').innerText = "Idle / No Contention";
+    document.getElementById('val-active-flows').innerHTML = '0 <span style="font-size: 14px; color: var(--text-dim);">/ 3</span>';
 
-    function appendLogLine(timeStr, tag, msg, color) {
-      const term = document.getElementById('log-terminal');
-      if (!term) return;
-      const line = document.createElement('div');
-      line.style.marginBottom = '4px';
-      line.innerHTML = `<span style="color: #64748b;">[${timeStr}]</span> <span style="color: ${color}; font-weight: 700;">[${tag}]</span> <span>${msg}</span>`;
-      term.appendChild(line);
-      term.scrollTop = term.scrollHeight;
-    }
+    ['h1', 'h2', 'h4'].forEach(h => {
+      document.getElementById(`t-${h}-rate`).innerText = "0.00 Mbps";
+      document.getElementById(`t-${h}-loss`).innerText = "0.0%";
+      document.getElementById(`t-${h}-lat`).innerText = "0.0 ms";
+    });
+  }
 
-    async function triggerStartTraffic() {
-      const btn = document.getElementById('btn-start');
-      btn.innerHTML = '<span>⏳</span> Starting...';
-      btn.disabled = true;
-      const now = new Date().toTimeString().split(' ')[0];
-      appendLogLine(now, "UI ACTION", "▶ 1-Click Start Traffic sent to Mininet (40s)", "#10b981");
-      experimentStartTime = Date.now();
-      currentPhase = 1;
-      prevPhase = 1;
-      updatePhaseUI();
-      startSwapCountdown(20);
-      try {
-        await fetch('/api/action/start', { method: 'POST' });
-      } catch (e) {}
-      setTimeout(() => {
-        btn.innerHTML = '<span>▶</span> Start Traffic (40s)';
-        btn.disabled = false;
-      }, 3000);
-    }
+  function startTraffic() {
+    resetStatsVisuals();
+    startSwapCountdown(20);
+    fetch('/api/action/start', { method: 'POST', body: '40' });
+  }
 
-    async function triggerStopTraffic() {
-      const now = new Date().toTimeString().split(' ')[0];
-      appendLogLine(now, "UI ACTION", "⏹ Force Stop Traffic triggered by User", "#ef4444");
-      if (swapCountdownInterval) { clearInterval(swapCountdownInterval); swapCountdownInterval = null; }
-      experimentStartTime = null;
-      currentPhase = 1;
-      prevPhase = 1;
-      updatePhaseUI();
+  function stopTraffic() {
+    if (swapCountdownTimer) clearInterval(swapCountdownTimer);
+    fetch('/api/action/stop', { method: 'POST' });
+    resetStatsVisuals();
+    setPhaseUI(1);
+    document.getElementById('policy-timer-badge').innerText = "Stopped";
+  }
 
-      // Immediately reset UI to 0.00 Mbps
-      chart.data.datasets.forEach(ds => {
-        ds.data.shift();
-        ds.data.push(0);
+  function launchCustomExperiment() {
+    const dur = parseInt(document.getElementById('exp-dur').value) || 40;
+    const cfg = {
+      duration: dur,
+      h1: { enabled: document.getElementById('chk-h1').checked, rate: parseInt(document.getElementById('rate-h1').value) },
+      h2: { enabled: document.getElementById('chk-h2').checked, rate: parseInt(document.getElementById('rate-h2').value) },
+      h4: { enabled: document.getElementById('chk-h4').checked, rate: parseInt(document.getElementById('rate-h4').value) }
+    };
+    resetStatsVisuals();
+    startSwapCountdown(20);
+    fetch('/api/action/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg)
+    });
+  }
+
+  function clearLogs() {
+    fetch('/api/logs/clear', { method: 'POST' });
+    document.getElementById('log-box').innerHTML = '<div class="log-line" style="color: #64748b;">Logs cleared.</div>';
+  }
+
+  // Polling loop: Telemetry stats
+  async function fetchStats() {
+    try {
+      const resp = await fetch('/api/stats');
+      if (!resp.ok) return;
+      const data = await resp.json();
+
+      let r1 = 0, r2 = 0, r4 = 0;
+      let activeCount = 0;
+
+      (data.flows || []).forEach(f => {
+        const mbps = parseFloat(f.mbps) || 0;
+        const loss = parseFloat(f.loss_pct) || 0;
+        const lat = parseFloat(f.latency_ms) || 0;
+
+        if (mbps > 0.05) activeCount++;
+
+        if (f.port === 5001) {
+          r1 = mbps;
+          document.getElementById('t-h1-rate').innerText = mbps.toFixed(2) + ' Mbps';
+          document.getElementById('t-h1-loss').innerText = loss.toFixed(1) + '%';
+          document.getElementById('t-h1-lat').innerText = lat.toFixed(1) + ' ms';
+        } else if (f.port === 5002) {
+          r2 = mbps;
+          document.getElementById('t-h2-rate').innerText = mbps.toFixed(2) + ' Mbps';
+          document.getElementById('t-h2-loss').innerText = loss.toFixed(1) + '%';
+          document.getElementById('t-h2-lat').innerText = lat.toFixed(1) + ' ms';
+        } else if (f.port === 5003) {
+          r4 = mbps;
+          document.getElementById('t-h4-rate').innerText = mbps.toFixed(2) + ' Mbps';
+          document.getElementById('t-h4-loss').innerText = loss.toFixed(1) + '%';
+          document.getElementById('t-h4-lat').innerText = lat.toFixed(1) + ' ms';
+        }
       });
+
+      // Update Chart
+      chart.data.datasets[0].data.shift();
+      chart.data.datasets[0].data.push(r1);
+      chart.data.datasets[1].data.shift();
+      chart.data.datasets[1].data.push(r2);
+      chart.data.datasets[2].data.shift();
+      chart.data.datasets[2].data.push(r4);
       chart.update();
-      document.getElementById('pipe-bar').style.width = '0%';
-      document.getElementById('pipe-text').innerText = 'Bottleneck Link (s1 ↔ s2): 0.00 Mbps (Idle - 0% Load)';
-      document.getElementById('jain-val').innerText = '1.000 (Idle / No Contention)';
-      document.getElementById('jain-val').style.color = '#94a3b8';
 
-      try {
-        await fetch('/api/action/stop', { method: 'POST' });
-      } catch (e) {}
-    }
+      // Top KPIs
+      const total = parseFloat(data.total_mbps) || (r1 + r2 + r4);
+      const cap = parseFloat(data.link_capacity_mbps) || 10.0;
+      const pct = Math.min(100, Math.round((total / cap) * 100));
 
-    function toggleStudioCollapse() {
-      const b = document.getElementById('studio-body');
-      b.style.display = (b.style.display === 'none') ? 'block' : 'none';
-    }
+      document.getElementById('val-total-rate').innerText = total.toFixed(2);
+      document.getElementById('val-load-pct').innerText = pct + '%';
+      document.getElementById('bar-total-load').style.width = pct + '%';
+      document.getElementById('topo-pipe-fill').style.width = pct + '%';
+      document.getElementById('topo-link-text').innerText = `${total.toFixed(2)} Mbps (${pct}% Load)`;
+      document.getElementById('val-active-flows').innerHTML = `${activeCount} <span style="font-size: 14px; color: var(--text-dim);">/ 3</span>`;
 
-    function updateRateLabel(h) {
-      const val = document.getElementById(`cfg-${h}-rate`).value;
-      document.getElementById(`cfg-${h}-rate-val`).innerText = `${val} Mbps`;
-    }
-
-    function updateDurLabel() {
-      const val = document.getElementById('cfg-dur').value;
-      document.getElementById('cfg-dur-val').innerText = `${val} s`;
-    }
-
-    function setPreset(type) {
-      if (type === 'benchmark') {
-        document.getElementById('cfg-h1-enable').checked = true;
-        document.getElementById('cfg-h1-rate').value = 10;
-        document.getElementById('cfg-h2-enable').checked = true;
-        document.getElementById('cfg-h2-rate').value = 10;
-        document.getElementById('cfg-h4-enable').checked = true;
-        document.getElementById('cfg-h4-rate').value = 10;
-        document.getElementById('cfg-dur').value = 40;
-      } else if (type === 'overload') {
-        document.getElementById('cfg-h1-enable').checked = true;
-        document.getElementById('cfg-h1-rate').value = 15;
-        document.getElementById('cfg-h2-enable').checked = true;
-        document.getElementById('cfg-h2-rate').value = 15;
-        document.getElementById('cfg-h4-enable').checked = true;
-        document.getElementById('cfg-h4-rate').value = 15;
-        document.getElementById('cfg-dur').value = 40;
-      } else if (type === 'two_flow') {
-        document.getElementById('cfg-h1-enable').checked = true;
-        document.getElementById('cfg-h1-rate').value = 10;
-        document.getElementById('cfg-h2-enable').checked = true;
-        document.getElementById('cfg-h2-rate').value = 10;
-        document.getElementById('cfg-h4-enable').checked = false;
-        document.getElementById('cfg-dur').value = 30;
-      } else if (type === 'single') {
-        document.getElementById('cfg-h1-enable').checked = true;
-        document.getElementById('cfg-h1-rate').value = 10;
-        document.getElementById('cfg-h2-enable').checked = false;
-        document.getElementById('cfg-h4-enable').checked = false;
-        document.getElementById('cfg-dur').value = 25;
-      }
-      updateRateLabel('h1');
-      updateRateLabel('h2');
-      updateRateLabel('h4');
-      updateDurLabel();
-    }
-
-    async function launchCustomExperiment() {
-      const h1On = document.getElementById('cfg-h1-enable').checked;
-      const h1Rate = parseInt(document.getElementById('cfg-h1-rate').value, 10);
-      const h2On = document.getElementById('cfg-h2-enable').checked;
-      const h2Rate = parseInt(document.getElementById('cfg-h2-rate').value, 10);
-      const h4On = document.getElementById('cfg-h4-enable').checked;
-      const h4Rate = parseInt(document.getElementById('cfg-h4-rate').value, 10);
-      const dur = parseInt(document.getElementById('cfg-dur').value, 10);
-
-      const payload = {
-        action: "START",
-        duration: dur,
-        h1: { enabled: h1On, rate: h1Rate },
-        h2: { enabled: h2On, rate: h2Rate },
-        h4: { enabled: h4On, rate: h4Rate }
-      };
-
-      const btn = document.getElementById('btn-custom-launch');
-      btn.innerHTML = '<span>⏳</span> Launching...';
-      btn.disabled = true;
-
-      const now = new Date().toTimeString().split(' ')[0];
-      appendLogLine(now, "STUDIO", `🚀 Custom Experiment Launched (${dur}s): h1=${h1On ? h1Rate+'M':'OFF'}, h2=${h2On ? h2Rate+'M':'OFF'}, h4=${h4On ? h4Rate+'M':'OFF'}`, "#60a5fa");
-
-      try {
-        await fetch('/api/action/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-      } catch (e) {}
-
-      // Reset phase and start countdown for the dynamic swap at t=20s
-      currentPhase = 1;
-      prevPhase = 1;
-      updatePhaseUI();
-      startSwapCountdown(20);
-
-      setTimeout(() => {
-        btn.innerHTML = '<span>🚀</span> Launch Custom Experiment';
-        btn.disabled = false;
-      }, 3000);
-    }
-
-    async function clearLogs() {
-      const term = document.getElementById('log-terminal');
-      if (term) term.innerHTML = '';
-      lastLogCount = 0;
-      try {
-        await fetch('/api/logs/clear', { method: 'POST' });
-      } catch (e) {}
-    }
-
-    function startSwapCountdown(swapAtSec) {
-      if (swapCountdownInterval) clearInterval(swapCountdownInterval);
-      const startMs = Date.now();
-      const banner = document.getElementById('policy-label');
-      swapCountdownInterval = setInterval(() => {
-        const elapsed = (Date.now() - startMs) / 1000;
-        const remaining = Math.max(0, Math.ceil(swapAtSec - elapsed));
-        if (remaining > 0 && currentPhase === 1) {
-          if (banner) banner.innerText = `Phase 1 — Initial Priority (h1 High: 6 Mbps, h2 Med: 3 Mbps, h4 Low: 1 Mbps)  ⏱ Dynamic Swap in ${remaining}s`;
-        } else {
-          clearInterval(swapCountdownInterval);
-          swapCountdownInterval = null;
-          if (currentPhase === 1) updatePhaseUI(); // restore clean label
-        }
-      }, 1000);
-    }
-
-    async function fetchLogs(flows, totalMbps) {
-      const now = new Date().toTimeString().split(' ')[0];
-
-      // ── Phase shift detection (ALWAYS runs before any early return) ───────────
-      if (currentPhase !== prevPhase) {
-        if (currentPhase === 2) {
-          appendLogLine(now, "SDN HUB",  "⚡ DYNAMIC POLICY SWAP TRIGGERED (t = +20s)", "#f59e0b");
-          appendLogLine(now, "OVS HTB",  "Queue 0 demoted → min-rate=1 Mbps  (h1 best-effort)", "#ef4444");
-          appendLogLine(now, "OVS HTB",  "Queue 2 promoted → min-rate=6 Mbps  (h4 high-priority)", "#10b981");
-          appendLogLine(now, "FLOWMOD",  "OpenFlow 1.3 flow entries unchanged — only HTB rates modified", "#38bdf8");
-          appendLogLine(now, "JAIN",     "Jain Fairness Index maintained at 0.985 (Optimal Weighted)", "#a855f7");
-          // Flash the phase banner to draw attention
-          const banner = document.querySelector('.phase-banner');
-          if (banner) {
-            banner.style.borderLeftColor = '#f59e0b';
-            banner.style.background = 'rgba(245,158,11,0.12)';
-            setTimeout(() => {
-              banner.style.borderLeftColor = '#38bdf8';
-              banner.style.background = '#1e293b';
-            }, 4000);
-          }
-        } else {
-          appendLogLine(now, "SDN HUB", "🔄 Policy reset to Phase 1 (Initial Priorities)", "#38bdf8");
-        }
-        prevPhase = currentPhase;
+      // Jain's Fairness Index
+      const activeRates = [r1, r2, r4].filter(r => r > 0.05);
+      if (activeRates.length > 1) {
+        const sum = activeRates.reduce((a, b) => a + b, 0);
+        const sumSq = activeRates.reduce((a, b) => a + (b * b), 0);
+        const jain = (sum * sum) / (activeRates.length * sumSq);
+        document.getElementById('val-jain').innerText = jain.toFixed(3);
+        document.getElementById('sub-jain').innerText = "Weighted HTB Contention";
+      } else {
+        document.getElementById('val-jain').innerText = "1.000";
+        document.getElementById('sub-jain').innerText = activeRates.length === 1 ? "Single Flow Saturation" : "Idle / No Contention";
       }
 
-      // ── Fetch live backend logs from /api/logs ─────────────────────────────
-      try {
-        const res = await fetch('/api/logs');
-        const data = await res.json();
-        if (data && data.logs) {
-          if (data.logs.length < lastLogCount) {
-            // Logs were cleared on server
-            lastLogCount = 0;
-            const term = document.getElementById('log-terminal');
-            if (term) term.innerHTML = '';
-          }
-          if (data.logs.length > lastLogCount) {
-            const newLines = data.logs.slice(lastLogCount);
-            newLines.forEach(l => {
-              let tag = "SYSTEM";
-              let color = "#38bdf8";
-              // Keyword-based colouring for backend log lines
-              if (l.includes("SWAP") || l.includes("POLICY") || l.includes("[DYN]") ||
-                  l.includes("Demoted") || l.includes("Promoted") || l.includes("Phase 2")) {
-                tag = "SDN SWAP"; color = "#f59e0b";
-              } else if (l.includes("FAIL") || l.includes("Error") || l.includes("stopped")) {
-                tag = "WARN"; color = "#ef4444";
-              } else if (l.includes("OK") || l.includes("started") || l.includes("passed") ||
-                         l.includes("initialized") || l.includes("launched")) {
-                tag = "SUCCESS"; color = "#10b981";
-              } else if (l.includes("UDP") || l.includes("Port") || l.includes("stream") ||
-                         l.includes("traffic") || l.includes("Incoming")) {
-                tag = "SOCKET"; color = "#a855f7";
-              } else if (l.includes("PING") || l.includes("RTT")) {
-                tag = "PING"; color = "#34d399";
-              }
-              appendLogLine(now, tag, l, color);
-            });
-            lastLogCount = data.logs.length;
-            // NOTE: no early return here — fall through to telemetry heartbeat
-          }
-        }
-      } catch (e) {}
-
-      // ── Periodic telemetry heartbeat (every 4 s, only when traffic active) ──
-      if (step % 4 === 0 && totalMbps > 0.1) {
-        appendLogLine(now, "TELEMETRY",
-          `Aggregate: ${totalMbps.toFixed(2)} Mbps | Load: ${Math.min(100,(totalMbps/10)*100).toFixed(0)}% | Jain: 0.985`,
-          "#94a3b8");
+      // Auto-detect phase from telemetry crossover
+      if (r4 > 4.5 && r1 < 2.5 && currentPhase !== 2) {
+        setPhaseUI(2);
+      } else if (r1 > 4.5 && r4 < 2.5 && currentPhase !== 1) {
+        setPhaseUI(1);
       }
+
+    } catch (e) {
+      console.error("Stats poll error:", e);
     }
+  }
 
-    // Initial greeting logs
-    window.addEventListener('DOMContentLoaded', () => {
-      const now = new Date().toTimeString().split(' ')[0];
-      appendLogLine(now, "SDN INIT", "Connected to OpenFlow 1.3 Controller (DPID 0000000000000001)", "#38bdf8");
-      appendLogLine(now, "OVS HTB", "HTB QoS configured on egress port s1-eth4 (Capacity: 10 Mbps)", "#10b981");
-      appendLogLine(now, "QoS MAP", "Queue 0 (6 Mbps) | Queue 1 (3 Mbps) | Queue 2 (1 Mbps)", "#cbd5e1");
-      appendLogLine(now, "READY", "System ready. Click 'Start Traffic' or launch Custom Studio to begin.", "#38bdf8");
-    });
+  // Polling loop: Logs
+  let lastLogCount = 0;
+  async function fetchLogs() {
+    try {
+      const resp = await fetch('/api/logs');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const logs = data.logs || [];
 
-    setInterval(fetchStats, 1000);
-  </script>
+      if (logs.length !== lastLogCount) {
+        lastLogCount = logs.length;
+        const box = document.getElementById('log-box');
+        if (logs.length === 0) {
+          box.innerHTML = '<div class="log-line" style="color: #64748b;">Ready. Start traffic to stream controller events.</div>';
+          return;
+        }
+
+        box.innerHTML = logs.map(line => {
+          let cls = 'log-line';
+          if (line.includes('SWAP') || line.includes('Phase 2') || line.includes('Demoted') || line.includes('Promoted')) {
+            cls += ' log-dyn';
+          } else if (line.includes('OVS') || line.includes('Queue') || line.includes('FLOWMOD')) {
+            cls += ' log-ovs';
+          } else if (line.includes('SOCKET') || line.includes('UDP')) {
+            cls += ' log-soc';
+          }
+          return `<div class="${cls}">${line}</div>`;
+        }).join('');
+        box.scrollTop = box.scrollHeight;
+
+        // Auto-detect swap from controller logs
+        const hasSwap = logs.some(l => l.includes('SDN POLICY SWAP') || l.includes('Queue 2 promoted'));
+        if (hasSwap && currentPhase !== 2) {
+          setPhaseUI(2);
+        }
+      }
+    } catch (e) {
+      console.error("Logs poll error:", e);
+    }
+  }
+
+  setInterval(fetchStats, 1000);
+  setInterval(fetchLogs, 1500);
+</script>
+
 </body>
 </html>
 """
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    """Zero-dependency HTTP Handler for Dashboard Web UI and REST API."""
+
     def do_POST(self):
         global PENDING_COMMAND
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8") if content_length > 0 else ""
 
-        if self.path == "/api/action/start":
-            try:
-                # Clear previous logs
-                with open(LOGS_FILE, "w") as f:
-                    f.truncate(0)
-                try:
-                    os.chmod(LOGS_FILE, 0o666)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-            # Reset stats file to 0.00 Mbps immediately before new experiment launches
+        if self.path in ("/api/action/start", "/api/action/custom"):
             zero_stats = {
                 "timestamp": time.time(),
                 "total_mbps": 0.0,
@@ -770,7 +783,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            # Write zero stats
             zero_stats = {
                 "timestamp": time.time(),
                 "total_mbps": 0.0,
@@ -819,11 +831,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         global PENDING_COMMAND
-        if self.path == "/" or self.path.startswith("/?"):
+        if self.path in ("/", "") or self.path.startswith("/?"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_TEMPLATE.encode("utf-8"))
+            self.wfile.write(HTML_PAGE.encode("utf-8"))
 
         elif self.path == "/api/cmd/pending":
             cmd = PENDING_COMMAND
@@ -841,8 +853,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             data = {}
             if os.path.exists(STATS_FILE):
-                # Retry up to 3 times in case of a concurrent write (race window)
-                for _attempt in range(3):
+                for _ in range(3):
                     try:
                         with open(STATS_FILE, "r") as f:
                             raw = f.read()
@@ -850,11 +861,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                             data = json.loads(raw)
                             break
                     except Exception:
-                        time.sleep(0.05)
+                        time.sleep(0.04)
 
-            # Only declare data stale if we have a valid timestamp AND it's very old.
-            # If JSON parsing failed (data={}), timestamp defaults to 0 (epoch).
-            # Epoch 0 would appear billions of seconds stale — guard against that.
             file_time = data.get("timestamp", 0)
             now = time.time()
             is_stale = (file_time > 1_000_000) and (now - file_time > 10.0)
@@ -886,32 +894,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"logs": lines}).encode("utf-8"))
 
         elif self.path == "/api/debug":
-            # Diagnostic endpoint — open http://localhost:8080/api/debug while traffic runs
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            debug = {"stats_file": STATS_FILE, "now": time.time()}
-            if os.path.exists(STATS_FILE):
-                stat_info = os.stat(STATS_FILE)
-                debug["file_mtime"] = stat_info.st_mtime
-                debug["file_size"] = stat_info.st_size
-                debug["file_age_sec"] = round(time.time() - stat_info.st_mtime, 2)
-                debug["file_mode_octal"] = oct(stat_info.st_mode)
-                try:
-                    with open(STATS_FILE, "r") as f:
-                        raw = f.read()
-                    debug["raw_content"] = raw[:800]
-                    debug["json_parse_ok"] = True
-                    parsed = json.loads(raw)
-                    debug["json_timestamp"] = parsed.get("timestamp", "MISSING")
-                    debug["json_total_mbps"] = parsed.get("total_mbps", "MISSING")
-                    debug["json_flows_count"] = len(parsed.get("flows", []))
-                except Exception as e:
-                    debug["json_parse_ok"] = False
-                    debug["json_error"] = str(e)
-            else:
-                debug["file_exists"] = False
+            debug = {"stats_file": STATS_FILE, "now": time.time(), "file_exists": os.path.exists(STATS_FILE)}
             self.wfile.write(json.dumps(debug, indent=2).encode("utf-8"))
 
         else:
@@ -919,23 +906,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        # Silence standard HTTP access logs
         return
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SDN QoS Traffic Management Visual Dashboard")
+    parser = argparse.ArgumentParser(description="SDN QoS Traffic Management Minimal Dashboard")
     parser.add_argument("--port", type=int, default=8080, help="Port to run web server on (default: 8080)")
     args = parser.parse_args()
 
     server = HTTPServer(("0.0.0.0", args.port), DashboardHandler)
-    print("=" * 65)
-    print("       SDN QoS TRAFFIC MANAGEMENT VISUAL DASHBOARD")
-    print("=" * 65)
-    print(f"  Server running on http://localhost:{args.port}")
-    print("  Open this URL in any browser to visualize live flows and")
-    print("  explain the system architecture effortlessly!")
-    print("=" * 65)
+    print("=" * 60)
+    print("      SDN QoS MINIMALIST REAL-TIME DASHBOARD")
+    print("=" * 60)
+    print(f"  Listening on http://localhost:{args.port}")
+    print("=" * 60)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
