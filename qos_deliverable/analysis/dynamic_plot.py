@@ -4,7 +4,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-d = os.path.expanduser("~/qos_dynamic")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DATA_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "data", "qos_dynamic"))
+d = PROJECT_DATA_DIR if os.path.isdir(PROJECT_DATA_DIR) else os.path.expanduser("~/qos_dynamic")
 fmt = "%Y%m%d%H%M%S"
 flip = datetime.strptime(open(f"{d}/flip_time.txt").read().strip(), fmt)
 H = {"h1": "h1 (6 -> 1 Mbps)", "h2": "h2 (3 Mbps, unchanged)", "h4": "h4 (1 -> 6 Mbps)"}

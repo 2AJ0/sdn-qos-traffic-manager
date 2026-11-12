@@ -1,5 +1,7 @@
 import os, re
-d = os.path.expanduser("~/qos_after2")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DATA_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "data", "qos_after2"))
+d = PROJECT_DATA_DIR if os.path.isdir(PROJECT_DATA_DIR) else os.path.expanduser("~/qos_after2")
 DUR = 30
 print(f"{'host':<5}{'asked Mbps':>11}{'sent Mbps':>11}{'sent':>8}{'lost':>7}{'total':>8}{'loss %':>8}")
 for h in ("h1", "h2", "h4"):

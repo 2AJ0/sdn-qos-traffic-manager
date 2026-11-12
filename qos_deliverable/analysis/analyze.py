@@ -7,8 +7,22 @@ import matplotlib.pyplot as plt
 HOSTS = {"h1": ("h1 High (6 Mbps)", 6.0),
          "h2": ("h2 Medium (3 Mbps)", 3.0),
          "h4": ("h4 Best-effort (1 Mbps)", 1.0)}
-RUNS = [("before", "Before: queues missing (no QoS)", "~/qos_before"),
-        ("after", "After: QoS working", "~/qos_after")]
+# Locate data directory: look inside local qos_deliverable/data first, fallback to home directory
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DATA_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", "data"))
+
+def resolve_data_folder(folder_name):
+    clean_name = folder_name.replace("~/", "").replace("/", "")
+    local_path = os.path.join(PROJECT_DATA_DIR, clean_name)
+    if os.path.isdir(local_path):
+        return local_path
+    home_path = os.path.expanduser(folder_name)
+    if os.path.isdir(home_path):
+        return home_path
+    return local_path
+
+RUNS = [("before", "Before: queues missing (no QoS)", resolve_data_folder("qos_before")),
+        ("after", "After: QoS working", resolve_data_folder("qos_after"))]
 T0, T1 = 3, 28          # steady-state window (seconds)
 PINGS_SENT = 30
 
